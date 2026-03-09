@@ -310,6 +310,17 @@ kbd {
   background: rgba(3, 76, 255, 0.24);
 }
 
+.titlebar-action.danger {
+  background: rgba(252, 83, 58, 0.14);
+  border-color: rgba(252, 83, 58, 0.32);
+  color: #fc533a;
+}
+
+.titlebar-action.danger:hover {
+  background: rgba(252, 83, 58, 0.24);
+  color: #ff7a64;
+}
+
 /* ===== Main layout ===== */
 .workspace {
   display: grid;
@@ -940,13 +951,50 @@ kbd {
   margin-bottom: 4px;
 }
 
+/* Message hover actions */
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.message-turn:hover .message-actions {
+  opacity: 1;
+}
+
+.message-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-weak);
+  cursor: pointer;
+  padding: 0;
+}
+
+.message-action-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+.message-turn.user .message-actions {
+  margin-left: 0;
+  margin-right: auto;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 24px;
   padding: 48px 24px;
   color: var(--text-weak);
   text-align: center;
@@ -957,6 +1005,119 @@ kbd {
   max-width: 48ch;
   font-size: 14px;
   line-height: 1.5;
+}
+
+/* Welcome hero */
+.welcome-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.welcome-icon {
+  color: var(--primary);
+  margin-bottom: 4px;
+}
+
+.welcome-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+}
+
+.welcome-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-base);
+  max-width: 44ch;
+  line-height: 1.5;
+}
+
+/* Welcome action cards */
+.welcome-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  max-width: 420px;
+  width: 100%;
+}
+
+.welcome-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface-base);
+  border: 1px solid var(--border-weaker);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-base);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.welcome-card:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-weak);
+}
+
+.welcome-card svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--text-weak);
+}
+
+.welcome-card:hover svg {
+  color: var(--primary);
+}
+
+.welcome-card div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.welcome-card strong {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-strong);
+}
+
+.welcome-card span {
+  font-size: 11.5px;
+  color: var(--text-weak);
+  line-height: 1.4;
+}
+
+/* Welcome keyboard shortcuts */
+.welcome-shortcuts {
+  display: flex;
+  gap: 18px;
+  font-size: 11.5px;
+  color: var(--text-weak);
+}
+
+.welcome-shortcuts span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.welcome-shortcuts kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--surface-base);
+  border: 1px solid var(--border-weaker);
+  border-radius: 4px;
+  color: var(--text-base);
 }
 
 .empty-inline {

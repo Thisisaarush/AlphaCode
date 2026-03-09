@@ -33,6 +33,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Square,
   Terminal,
   TerminalSquare,
   Trash2,
@@ -96,8 +97,8 @@ export default function App() {
   const [activeFileId, setActiveFileId] = useState("");
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [provider, setProvider] = useState("Copilot");
-  const [model, setModel] = useState("GPT-4o");
+  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "Copilot");
+  const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "GPT-4o");
   const [prompt, setPrompt] = useState("");
   const [terminalInput, setTerminalInput] = useState("pnpm dev");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
@@ -107,7 +108,7 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [runningCommand, setRunningCommand] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState(() => localStorage.getItem("ac:sessionId") || "");
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [fsEntries, setFsEntries] = useState<FsEntry[]>([]);
@@ -212,6 +213,42 @@ export default function App() {
     };
   }, []);
 
+  // Whether AI is currently streaming a response
+  const isStreaming = !!(streamingContent || eventSourceRef.current);
+
+  /** Stop an in-flight AI streaming response */
+  async function handleStopStreaming() {
+    // Close client-side SSE connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setStreamingContent("");
+    setStreamingMessageId(null);
+    streamingContentRef.current = "";
+
+    // Tell server to abort the underlying fetch
+    if (activeSessionId) {
+      try {
+        await fetch(`${serverUrl}/api/sessions/${activeSessionId}/abort`, { method: "POST" });
+        // Reload session to get any partial content saved
+        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+        setSessionDetail(payload);
+      } catch {
+        // Ignore — best effort
+      }
+    }
+  }
+
+  /** Kill a running terminal command */
+  async function handleKillCommand(runId: string) {
+    try {
+      await fetch(`${serverUrl}/api/terminal/runs/${runId}`, { method: "DELETE" });
+    } catch {
+      // Ignore — best effort
+    }
+  }
+
   // Cleanup EventSources on unmount
   useEffect(() => {
     return () => {
@@ -225,6 +262,11 @@ export default function App() {
       }
     };
   }, []);
+
+  // Persist key state to localStorage
+  useEffect(() => { localStorage.setItem("ac:sessionId", activeSessionId); }, [activeSessionId]);
+  useEffect(() => { localStorage.setItem("ac:provider", provider); }, [provider]);
+  useEffect(() => { localStorage.setItem("ac:model", model); }, [model]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -302,6 +344,9 @@ export default function App() {
 
     const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`);
     setSessionDetail(payload);
+    // Restore provider/model from session
+    if (payload.provider) setProvider(payload.provider);
+    if (payload.model) setModel(payload.model);
     setTerminalRuns((current) => {
       const merged = [...payload.commandRuns, ...current.filter((item) => !payload.commandRuns.some((run) => run.id === item.id))];
       return merged.slice(0, 12);
@@ -774,7 +819,7 @@ export default function App() {
           </div>
           <div className="titlebar-chip muted">
             <GitBranch size={12} />
-            <span>main</span>
+            <span>{snapshot?.workspace?.branch ?? "main"}</span>
           </div>
         </div>
 
@@ -1309,6 +1354,36 @@ export default function App() {
                             <div className="message-meta">
                               <span>{message.role}</span>
                               <span>{formatTime(message.createdAt)}</span>
+                              <div className="message-actions">
+                                <button
+                                  className="message-action-btn"
+                                  type="button"
+                                  title="Copy message"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(message.content);
+                                  }}
+                                >
+                                  <Copy size={12} />
+                                </button>
+                                <button
+                                  className="message-action-btn"
+                                  type="button"
+                                  title="Delete message"
+                                  onClick={async () => {
+                                    try {
+                                      await fetch(`${serverUrl}/api/messages/${message.id}`, { method: "DELETE" });
+                                      if (activeSessionId) {
+                                        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+                                        setSessionDetail(payload);
+                                      }
+                                    } catch {
+                                      // Ignore
+                                    }
+                                  }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
                             </div>
                             <div className="message-content">
                               {message.role === "assistant" ? (
@@ -1379,8 +1454,47 @@ export default function App() {
                       </>
                     ) : (
                       <div className="empty-state">
-                        <Bot size={20} />
-                        <p>Start a session to chat, run commands, and keep file context in sync.</p>
+                        <div className="welcome-hero">
+                          <Sparkles size={28} className="welcome-icon" />
+                          <h2 className="welcome-title">Alpha Code</h2>
+                          <p className="welcome-subtitle">AI-powered code editor. Ask questions, run commands, and edit files — all in one place.</p>
+                        </div>
+                        <div className="welcome-actions">
+                          <button className="welcome-card" type="button" onClick={handleNewSession}>
+                            <Plus size={16} />
+                            <div>
+                              <strong>New Session</strong>
+                              <span>Start a conversation with AI</span>
+                            </div>
+                          </button>
+                          <button className="welcome-card" type="button" onClick={() => { setShowTerminal(true); setDockTab("terminal"); }}>
+                            <Terminal size={16} />
+                            <div>
+                              <strong>Open Terminal</strong>
+                              <span>Run commands in your project</span>
+                            </div>
+                          </button>
+                          <button className="welcome-card" type="button" onClick={() => setSidebarTab("files")}>
+                            <Files size={16} />
+                            <div>
+                              <strong>Browse Files</strong>
+                              <span>Explore your project tree</span>
+                            </div>
+                          </button>
+                          <button className="welcome-card" type="button" onClick={() => setSidebarTab("settings")}>
+                            <Settings2 size={16} />
+                            <div>
+                              <strong>Settings</strong>
+                              <span>Configure AI providers</span>
+                            </div>
+                          </button>
+                        </div>
+                        <div className="welcome-shortcuts">
+                          <span><kbd>{"\u2318"}K</kbd> Search</span>
+                          <span><kbd>{"\u2318"}N</kbd> New Session</span>
+                          <span><kbd>{"\u2318"}S</kbd> Save File</span>
+                          <span><kbd>{"\u2318"}{"\u21A9"}</kbd> Send Message</span>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1432,10 +1546,17 @@ export default function App() {
                               <Braces size={11} /> Context
                             </span>
                           </div>
-                          <button className="titlebar-action primary" type="button" onClick={() => void handleSubmitPrompt()}>
-                            {submitting ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}
-                            <span>{submitting ? "Sending" : "Send"}</span>
-                          </button>
+                          {isStreaming ? (
+                            <button className="titlebar-action danger" type="button" onClick={() => void handleStopStreaming()}>
+                              <Square size={13} />
+                              <span>Stop</span>
+                            </button>
+                          ) : (
+                            <button className="titlebar-action primary" type="button" onClick={() => void handleSubmitPrompt()}>
+                              {submitting ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}
+                              <span>{submitting ? "Sending" : "Send"}</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1495,6 +1616,12 @@ export default function App() {
                             {runningCommand ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}
                             <span>Run</span>
                           </button>
+                          {runningCommand && activeRun && (
+                            <button className="titlebar-action danger" type="button" onClick={() => void handleKillCommand(activeRun.id)}>
+                              <Square size={13} />
+                              <span>Kill</span>
+                            </button>
+                          )}
                         </div>
                       </div>
 

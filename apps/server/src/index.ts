@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,11 @@ const promptSuggestions = [
 
 const sessionStore = new Map<string, SessionDetail>();
 const commandRunStore = new Map<string, CommandRun>();
+
+// Abort controllers for in-flight AI streaming requests (keyed by session id)
+const activeAbortControllers = new Map<string, AbortController>();
+// Child processes for running terminal commands (keyed by run id)
+const activeChildProcesses = new Map<string, ChildProcess>();
 
 /* ================================================================
    SSE Streaming Infrastructure
@@ -682,17 +687,23 @@ type TokenCallback = (token: string) => void;
 async function parseSSEStream(
   body: ReadableStream<Uint8Array>,
   extractDelta: (parsed: Record<string, unknown>) => string | null,
-  onToken: TokenCallback
+  onToken: TokenCallback,
+  signal?: AbortSignal
 ): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullContent = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel();
+        break;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
@@ -715,6 +726,13 @@ async function parseSSEStream(
       }
     }
   }
+  } catch (err) {
+    // If aborted, return what we have so far
+    if (signal?.aborted) {
+      return fullContent || "[Streaming aborted]";
+    }
+    throw err;
+  }
 
   return fullContent || "[No response from model]";
 }
@@ -724,7 +742,8 @@ async function callOpenAICompatibleStream(
   apiKey: string,
   model: string,
   messages: ChatMessage[],
-  onToken: TokenCallback
+  onToken: TokenCallback,
+  signal?: AbortSignal
 ): Promise<string> {
   const url = `${config.baseUrl}/chat/completions`;
 
@@ -755,7 +774,7 @@ async function callOpenAICompatibleStream(
   });
 
   console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
-  const response = await fetch(url, { method: "POST", headers, body });
+  const response = await fetch(url, { method: "POST", headers, body, signal });
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "");
@@ -772,7 +791,8 @@ async function callOpenAICompatibleStream(
       const choices = parsed.choices as Array<{ delta?: { content?: string } }> | undefined;
       return choices?.[0]?.delta?.content ?? null;
     },
-    onToken
+    onToken,
+    signal
   );
 }
 
@@ -781,7 +801,8 @@ async function callAnthropicStream(
   apiKey: string,
   model: string,
   messages: ChatMessage[],
-  onToken: TokenCallback
+  onToken: TokenCallback,
+  signal?: AbortSignal
 ): Promise<string> {
   const url = `${config.baseUrl}/messages`;
 
@@ -810,7 +831,8 @@ async function callAnthropicStream(
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01"
     },
-    body
+    body,
+    signal
   });
 
   if (!response.ok) {
@@ -828,7 +850,12 @@ async function callAnthropicStream(
   let buffer = "";
   let fullContent = "";
 
+  try {
   while (true) {
+    if (signal?.aborted) {
+      await reader.cancel();
+      break;
+    }
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -861,6 +888,12 @@ async function callAnthropicStream(
       }
     }
   }
+  } catch (err) {
+    if (signal?.aborted) {
+      return fullContent || "[Streaming aborted]";
+    }
+    throw err;
+  }
 
   return fullContent || "[No response from model]";
 }
@@ -871,7 +904,8 @@ async function callAIStream(
   uiModel: string,
   messages: ChatMessage[],
   onToken: TokenCallback,
-  fileContext?: string
+  fileContext?: string,
+  signal?: AbortSignal
 ): Promise<string> {
   const config = resolveProvider(providerLabel);
   if (!config) {
@@ -900,10 +934,13 @@ async function callAIStream(
 
   try {
     if (config.format === "anthropic") {
-      return await callAnthropicStream(config, apiKey, model, chatMessages, onToken);
+      return await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
     }
-    return await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken);
+    return await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
   } catch (error) {
+    if (signal?.aborted) {
+      return "[Streaming aborted]";
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ai-stream] ${config.label} error:`, message);
     const errMsg = `[Error] ${config.label} API call failed: ${message}`;
@@ -1005,11 +1042,20 @@ async function buildWorkspaceSnapshot() {
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .map(toSummary);
 
+  // Detect git branch
+  let branch: string | undefined;
+  try {
+    branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+  } catch {
+    // Not a git repo or git not available
+  }
+
   return workspaceSnapshotSchema.parse({
     workspace: {
       id: "alpha-code",
       name: APP_NAME,
       root: workspaceRoot,
+      branch,
       files
     },
     sessions,
@@ -1058,6 +1104,9 @@ async function runCommand(command: string, sessionId?: string) {
     }
   });
 
+  // Store child process for potential killing
+  activeChildProcesses.set(run.id, child);
+
   child.stdout.on("data", (chunk) => {
     const text = chunk.toString();
     run.output += text;
@@ -1083,7 +1132,8 @@ async function runCommand(command: string, sessionId?: string) {
     commandRunStore.set(run.id, { ...run });
     emitter.emit("close", { status: run.status, exitCode: code });
 
-    // Clean up emitter after a short delay to let SSE clients receive the close event
+    // Clean up child process reference and emitter after a short delay
+    activeChildProcesses.delete(run.id);
     setTimeout(() => { terminalEmitters.delete(run.id); }, 2000);
 
     if (sessionId) {
@@ -1217,15 +1267,21 @@ const server = createServer(async (request, response) => {
       const emitter = getSessionEmitter(id);
       const messageId = randomUUID();
 
+      // Create abort controller for this streaming request
+      const abortController = new AbortController();
+      activeAbortControllers.set(id, abortController);
+
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext).then((reply) => {
+      }, fileContext, abortController.signal).then((reply) => {
+        activeAbortControllers.delete(id);
         attachMessage(session, "assistant", reply);
         session.status = "idle";
         sessionStore.set(id, { ...session });
         emitter.emit("done", { messageId });
         console.log(`[ai-stream] Session ${id} got reply (${reply.length} chars)`);
       }).catch((error) => {
+        activeAbortControllers.delete(id);
         const message = error instanceof Error ? error.message : String(error);
         attachMessage(session, "assistant", `[Error] AI call failed: ${message}`);
         session.status = "review";
@@ -1261,16 +1317,22 @@ const server = createServer(async (request, response) => {
       const emitter = getSessionEmitter(session.id);
       const messageId = randomUUID();
 
+      // Create abort controller for this streaming request
+      const abortController = new AbortController();
+      activeAbortControllers.set(session.id, abortController);
+
       // Streaming AI call
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext).then((reply) => {
+      }, fileContext, abortController.signal).then((reply) => {
+        activeAbortControllers.delete(session.id);
         attachMessage(session, "assistant", reply);
         session.status = "idle";
         sessionStore.set(session.id, { ...session });
         emitter.emit("done", { messageId });
         console.log(`[ai-stream] Session ${session.id} got reply (${reply.length} chars)`);
       }).catch((error) => {
+        activeAbortControllers.delete(session.id);
         const message = error instanceof Error ? error.message : String(error);
         attachMessage(session, "assistant", `[Error] AI call failed: ${message}`);
         session.status = "review";
@@ -1279,6 +1341,23 @@ const server = createServer(async (request, response) => {
       });
 
       sendJson(response, 200, { ...session, streamMessageId: messageId });
+      return;
+    }
+
+    /* DELETE /api/messages/:id — delete a message from its session */
+    if (request.method === "DELETE" && request.url?.match(/^\/api\/messages\/[^/]+$/)) {
+      const messageId = request.url.split("/")[3];
+      let found = false;
+      for (const session of sessionStore.values()) {
+        const index = session.messages.findIndex((m) => m.id === messageId);
+        if (index !== -1) {
+          session.messages.splice(index, 1);
+          sessionStore.set(session.id, { ...session });
+          found = true;
+          break;
+        }
+      }
+      sendJson(response, 200, { ok: true, deleted: found });
       return;
     }
 
@@ -1333,6 +1412,27 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    /* POST /api/sessions/:id/abort — cancel an in-flight AI streaming request */
+    if (request.method === "POST" && request.url?.match(/^\/api\/sessions\/[^/]+\/abort$/)) {
+      const sessionId = request.url.split("/")[3];
+      const controller = activeAbortControllers.get(sessionId);
+      if (controller) {
+        controller.abort();
+        activeAbortControllers.delete(sessionId);
+        // Also emit a done event so the SSE client knows streaming ended
+        const emitter = getSessionEmitter(sessionId);
+        emitter.emit("done", { messageId: null, aborted: true });
+        console.log(`[ai-stream] Aborted streaming for session ${sessionId}`);
+      }
+      const session = sessionStore.get(sessionId);
+      if (session) {
+        session.status = "idle";
+        sessionStore.set(sessionId, { ...session });
+      }
+      sendJson(response, 200, { ok: true, aborted: !!controller });
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith("/api/sessions/")) {
       const sessionId = request.url.replace("/api/sessions/", "");
       const session = sessionStore.get(sessionId);
@@ -1350,6 +1450,12 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "DELETE" && request.url?.startsWith("/api/sessions/")) {
       const sessionId = request.url.replace("/api/sessions/", "");
+      // Abort any in-flight AI streaming
+      const controller = activeAbortControllers.get(sessionId);
+      if (controller) {
+        controller.abort();
+        activeAbortControllers.delete(sessionId);
+      }
       const existed = sessionStore.delete(sessionId);
       // Also clean up any SSE emitter
       sessionEmitters.delete(sessionId);
@@ -1424,6 +1530,30 @@ const server = createServer(async (request, response) => {
         }
       }
       sendJson(response, 201, run);
+      return;
+    }
+
+    /* DELETE /api/terminal/runs/:id — kill a running terminal process */
+    if (request.method === "DELETE" && request.url?.match(/^\/api\/terminal\/runs\/[^/]+$/)) {
+      const runId = request.url.split("/")[4];
+      const run = commandRunStore.get(runId);
+      if (!run) {
+        sendJson(response, 404, { error: "Run not found" });
+        return;
+      }
+      const child = activeChildProcesses.get(runId);
+      if (child && run.status === "running") {
+        child.kill("SIGTERM");
+        // Give it 3s then SIGKILL
+        setTimeout(() => {
+          if (activeChildProcesses.has(runId)) {
+            child.kill("SIGKILL");
+          }
+        }, 3000);
+        sendJson(response, 200, { ok: true, killed: true });
+      } else {
+        sendJson(response, 200, { ok: true, killed: false, status: run.status });
+      }
       return;
     }
 

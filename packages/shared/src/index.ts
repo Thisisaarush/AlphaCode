@@ -35,6 +35,7 @@ export const workspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
   root: z.string(),
+  branch: z.string().optional(),
   files: z.array(fileEntrySchema)
 });
 
