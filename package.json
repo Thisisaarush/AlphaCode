@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@10.4.1",
   "pnpm": {
-    "onlyBuiltDependencies": ["electron"]
+    "onlyBuiltDependencies": ["electron", "node-pty"]
   },
   "engines": {
     "node": ">=20"

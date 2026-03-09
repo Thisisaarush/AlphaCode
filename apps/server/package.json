@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@alpha-code/shared": "workspace:*",
+    "node-pty": "^1.1.0",
+    "ws": "^8.19.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }
