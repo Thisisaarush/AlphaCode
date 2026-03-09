@@ -12,10 +12,14 @@
     "@alpha-code/shared": "workspace:*",
     "@monaco-editor/react": "^4.7.0",
     "framer-motion": "^12.23.12",
+    "highlight.js": "^11.11.1",
     "lucide-react": "^0.542.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-resizable-panels": "^2.1.7"
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^2.1.7",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.10",
