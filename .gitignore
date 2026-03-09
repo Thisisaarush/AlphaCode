@@ -1,0 +1,8 @@
+node_modules
+.turbo
+dist
+.DS_Store
+*.log
+apps/web/.vite
+apps/server/.env
+apps/web/.env

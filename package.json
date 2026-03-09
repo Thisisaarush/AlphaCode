@@ -1,0 +1,22 @@
+{
+  "name": "alpha-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.4.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,css,html,json,md,yaml,yml}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.9",
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.5",
+    "typescript": "^5.9.2"
+  }
+}
