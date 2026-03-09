@@ -438,6 +438,55 @@ const MODEL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const OPENAI_CHAT_PREFIXES = ["gpt-", "o1", "o3", "o4", "chatgpt-"];
 const OPENAI_EXCLUDE_PATTERNS = ["realtime", "audio", "search", "transcribe"];
 
+/** Copilot chat-compatible model prefixes — only models matching these are shown */
+const COPILOT_CHAT_PREFIXES = [
+  "gpt-", "claude-", "o1", "o3", "o4",
+  "gemini-", "chatgpt-",
+];
+const COPILOT_EXCLUDE_PATTERNS = [
+  "codex", "embed", "whisper", "tts", "dall-e", "davinci", "babbage",
+  "moderation", "text-embedding", "code-search", "text-search",
+  "text-similarity", "curie", "ada", "realtime", "audio", "search", "transcribe"
+];
+
+/** Check if a Copilot model is chat-compatible */
+function isCopilotChatModel(id: string): boolean {
+  const lower = id.toLowerCase();
+  if (COPILOT_EXCLUDE_PATTERNS.some((p) => lower.includes(p))) return false;
+  return COPILOT_CHAT_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+/** Strip date suffixes from model IDs for deduplication.
+ *  e.g. "gpt-4o-2024-08-06" → "gpt-4o", "gpt-4.1-2025-04-14" → "gpt-4.1"
+ */
+function stripDateSuffix(id: string): string {
+  return id.replace(/-\d{4}-?\d{2}-?\d{2}$/, "").replace(/-\d{8}$/, "");
+}
+
+/** Deduplicate models: for models with the same base ID (after stripping date suffixes),
+ *  keep only the base (non-dated) version. If all versions have dates, keep the latest (last sorted). */
+function deduplicateModels(models: string[]): string[] {
+  const groups = new Map<string, string[]>();
+  for (const m of models) {
+    const key = stripDateSuffix(m);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(m);
+  }
+  const result: string[] = [];
+  for (const [key, variants] of groups) {
+    // Prefer the base (non-dated) version
+    const base = variants.find((v) => v === key);
+    if (base) {
+      result.push(base);
+    } else {
+      // All have dates — pick the latest (sorted descending, take first)
+      variants.sort().reverse();
+      result.push(variants[0]);
+    }
+  }
+  return result.sort();
+}
+
 async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]> {
   const apiKey = await getKeyForProviderAsync(config.id);
   if (!apiKey) return config.fallbackModels;
@@ -463,7 +512,10 @@ async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]>
       });
       if (!res.ok) throw new Error(`Copilot /models returned ${res.status}`);
       const data = (await res.json()) as { data?: Array<{ id: string }> };
-      models = (data.data ?? []).map((m) => m.id);
+      models = (data.data ?? [])
+        .map((m) => m.id)
+        .filter(isCopilotChatModel)
+        .sort();
     } else if (config.format === "openai" && config.id === "openai") {
       const res = await fetch(`${config.baseUrl}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` }
@@ -503,6 +555,7 @@ async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]>
     }
 
     if (models.length > 0) {
+      models = deduplicateModels(models);
       modelCache.set(config.id, { models, fetchedAt: Date.now() });
       console.log(`[models] Fetched ${models.length} models for ${config.label}`);
       return models;
@@ -882,6 +935,9 @@ async function callCopilotStream(
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "");
+    if (response.status === 400 && errorBody.includes("unsupported_api_for_model")) {
+      throw new Error(`Model "${model}" is not compatible with the chat/completions API. Please select a different model.`);
+    }
     throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
   }
 
