@@ -12,8 +12,10 @@
     "@alpha-code/shared": "workspace:*",
     "@monaco-editor/react": "^4.7.0",
     "framer-motion": "^12.23.12",
+    "lucide-react": "^0.542.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-resizable-panels": "^2.1.7"
   },
   "devDependencies": {
     "@types/react": "^19.0.10",
