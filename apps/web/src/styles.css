@@ -190,6 +190,56 @@ kbd {
   height: var(--titlebar-h);
 }
 
+/* Electron: make titlebar draggable as a window drag region */
+.titlebar.electron {
+  -webkit-app-region: drag;
+}
+
+/* macOS Electron: offset left side for traffic light buttons */
+.titlebar.electron.mac {
+  padding-left: 80px;
+}
+
+/* All interactive elements inside the titlebar must not be draggable */
+.titlebar.electron button,
+.titlebar.electron label,
+.titlebar.electron select,
+.titlebar.electron input,
+.titlebar.electron kbd,
+.titlebar.electron .window-controls {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom window controls for Windows / Linux (frameless) */
+.window-controls {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  gap: 0;
+}
+
+.window-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: var(--titlebar-h);
+  border: none;
+  background: transparent;
+  color: var(--text-base);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.window-control-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.window-control-btn.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
 .titlebar-side {
   display: inline-flex;
   align-items: center;
@@ -371,9 +421,10 @@ kbd {
 
 .sidebar-panel {
   background: var(--background-strong);
-  display: grid;
-  grid-template-rows: auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* Pane headers */
@@ -385,6 +436,7 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .pane-kicker {
@@ -411,6 +463,8 @@ kbd {
   gap: 4px;
   align-content: start;
   min-height: 0;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .session-row {
@@ -519,6 +573,7 @@ kbd {
   color: var(--text-weak);
   font-size: 12px;
   border-top: 1px solid var(--border-weaker-base);
+  flex-shrink: 0;
 }
 
 .sidebar-footer-note.compact {
@@ -532,6 +587,7 @@ kbd {
   align-items: center;
   gap: 6px;
   border-top: 1px solid var(--border-weaker-base);
+  flex-shrink: 0;
 }
 
 .file-system-list {
@@ -540,6 +596,8 @@ kbd {
   gap: 2px;
   align-content: start;
   min-height: 0;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .fs-entry {
@@ -576,6 +634,7 @@ kbd {
 .search-panel {
   padding: 8px 10px;
   border-top: 1px solid var(--border-weaker-base);
+  flex-shrink: 0;
 }
 
 .search-panel input {
@@ -599,6 +658,8 @@ kbd {
   gap: 2px;
   align-content: start;
   min-height: 0;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .search-result {
@@ -638,6 +699,8 @@ kbd {
   gap: 4px;
   align-content: start;
   min-height: 0;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .change-card {
@@ -665,6 +728,9 @@ kbd {
   display: grid;
   gap: 6px;
   align-content: start;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .setting-row {
@@ -698,20 +764,23 @@ kbd {
 
 /* ===== Session view (single-column chat) ===== */
 .session-view {
-  display: grid;
-  grid-template-rows: 1fr auto;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
   position: relative;
 }
 
 /* Message timeline */
 .message-timeline {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
   padding: 24px 24px 16px;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  align-content: start;
-  min-height: 0;
 }
 
 /* User message: right-aligned bubble */
@@ -991,6 +1060,7 @@ kbd {
 /* Empty state */
 .empty-state {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -1129,6 +1199,7 @@ kbd {
 
 /* Suggestion strip */
 .suggestion-strip {
+  flex-shrink: 0;
   padding: 8px 24px;
   display: flex;
   align-items: center;
@@ -1138,6 +1209,7 @@ kbd {
 
 /* ===== Dock / Composer (floating surface) ===== */
 .dock-area {
+  flex-shrink: 0;
   padding: 0 24px 20px;
 }
 
@@ -1221,6 +1293,46 @@ kbd {
   gap: 8px;
   font-size: 12px;
   color: var(--text-weak);
+}
+
+.dock-tray-selectors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dock-tray-sep {
+  color: var(--text-weak);
+  opacity: 0.5;
+  font-size: 11px;
+}
+
+.dock-tray-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-base);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s;
+}
+
+.dock-tray-select:hover {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+.dock-tray-select select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
 }
 
 /* ===== Right panel (file editor, toggled) ===== */
@@ -1377,9 +1489,11 @@ kbd {
 .terminal-area {
   border-top: 1px solid var(--border-weaker-base);
   background: var(--background-base);
-  display: grid;
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .terminal-header {
@@ -1436,8 +1550,60 @@ kbd {
 }
 
 .terminal-body {
-  padding: 10px;
+  flex: 1;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminal-body-scroll {
+  padding: 10px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.xterm-container {
+  width: 100%;
+  height: 100%;
+  padding: 4px 0 0 4px;
+}
+
+/* Override xterm.js viewport to match our theme */
+.xterm-container .xterm {
+  height: 100%;
+}
+
+.xterm-container .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+.terminal-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 8px;
+}
+
+.terminal-connected {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+.terminal-disconnected {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+.terminal-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .run-meta {
@@ -1648,6 +1814,10 @@ kbd {
     grid-template-columns: 1fr;
     min-height: 80px;
     padding: 6px 12px;
+  }
+
+  .titlebar.electron.mac {
+    padding-left: 80px;
   }
 
   .titlebar-center {

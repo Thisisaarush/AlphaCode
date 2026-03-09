@@ -6,8 +6,7 @@ const sessionStatusSchema = z.enum(["idle", "running", "review"]);
 const commandRunStatusSchema = z.enum(["running", "completed", "failed", "killed"]);
 
 export const providerIdSchema = z.enum([
-  "github",
-  "copilot-experimental",
+  "copilot",
   "openrouter",
   "anthropic",
   "openai"
@@ -88,6 +87,7 @@ export const workspaceSnapshotSchema = z.object({
       label: z.string(),
       status: providerStatusSchema,
       model: z.string(),
+      models: z.array(z.string()).optional(),
       method: authMethodSchema.optional()
     })
   )

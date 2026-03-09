@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
@@ -107,16 +107,73 @@ async function ensureDevelopmentServices() {
 async function createWindow() {
   await ensureDevelopmentServices();
 
+  const preloadPath = path.resolve(__dirname, "../preload.cjs");
+
   const win = new BrowserWindow({
     width: 1480,
     height: 960,
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: "#101010",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    // macOS: hidden titlebar with inset traffic lights
+    // Windows/Linux: completely frameless (custom window controls in web UI)
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset",
+          trafficLightPosition: { x: 12, y: 12 }
+        }
+      : {
+          frame: false
+        }),
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: preloadPath
+    }
+  });
+
+  // IPC: window control buttons (minimize, maximize/restore, close)
+  ipcMain.on("window-control", (_event, action: string) => {
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!focused) return;
+    switch (action) {
+      case "minimize":
+        focused.minimize();
+        break;
+      case "maximize":
+        if (focused.isMaximized()) {
+          focused.unmaximize();
+        } else {
+          focused.maximize();
+        }
+        break;
+      case "close":
+        focused.close();
+        break;
+    }
+  });
+
+  // Open external links (target="_blank") in the system browser
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  // Prevent in-app navigation away from the app
+  win.webContents.on("will-navigate", (event, url) => {
+    const appOrigin = "http://127.0.0.1:3000";
+    if (!url.startsWith(appOrigin)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
+  // IPC: open URL in system browser (for xterm links, programmatic use)
+  ipcMain.on("open-external", (_event, url: string) => {
+    if (typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"))) {
+      shell.openExternal(url);
     }
   });
 

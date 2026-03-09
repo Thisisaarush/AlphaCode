@@ -1,10 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
+import nodePty from "node-pty";
+import { WebSocketServer, WebSocket } from "ws";
 import {
   APP_NAME,
   appendMessageSchema,
@@ -84,6 +87,51 @@ function getTerminalEmitter(runId: string): EventEmitter {
 
 const storedKeys = new Map<string, string>();
 
+/* ----------------------------------------------------------------
+   Persistent auth storage — ~/.alpha-code/auth.json
+   Stores GitHub OAuth token and manually-entered API keys so they
+   survive server restarts.
+   ---------------------------------------------------------------- */
+const AUTH_DIR = path.join(homedir(), ".alpha-code");
+const AUTH_FILE = path.join(AUTH_DIR, "auth.json");
+
+async function loadPersistedAuth(): Promise<void> {
+  try {
+    const raw = await readFile(AUTH_FILE, "utf8");
+    const data = JSON.parse(raw) as Record<string, string>;
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === "string" && value.length > 0) {
+        storedKeys.set(key, value);
+      }
+    }
+    // Migrate old github-oauth key to copilot-oauth
+    if (storedKeys.has("github-oauth") && !storedKeys.has("copilot-oauth")) {
+      storedKeys.set("copilot-oauth", storedKeys.get("github-oauth")!);
+      storedKeys.delete("github-oauth");
+      console.log("[auth] Migrated github-oauth → copilot-oauth");
+    }
+    console.log(`[auth] Loaded ${Object.keys(data).length} persisted key(s) from ${AUTH_FILE}`);
+  } catch {
+    // File doesn't exist or is invalid — that's fine, first run
+    console.log("[auth] No persisted auth found (first run)");
+  }
+}
+
+/** Persist all stored keys to disk */
+async function persistAuth(): Promise<void> {
+  try {
+    await mkdir(AUTH_DIR, { recursive: true });
+    const toSave: Record<string, string> = {};
+    for (const [key, value] of storedKeys.entries()) {
+      toSave[key] = value;
+    }
+    await writeFile(AUTH_FILE, JSON.stringify(toSave, null, 2), "utf8");
+    console.log(`[auth] Persisted ${Object.keys(toSave).length} key(s) to ${AUTH_FILE}`);
+  } catch (err) {
+    console.error("[auth] Failed to persist auth:", err instanceof Error ? err.message : err);
+  }
+}
+
 // GitHub OAuth Device Flow state
 interface GitHubDeviceFlowState {
   deviceCode: string;
@@ -95,103 +143,20 @@ interface GitHubDeviceFlowState {
 
 let githubDeviceFlow: GitHubDeviceFlowState | null = null;
 
-// Copilot token management — the OAuth token from GitHub device flow is
-// exchanged for a short-lived Copilot API token via the internal endpoint.
-interface CopilotTokenState {
-  token: string;
-  expiresAt: number; // epoch ms
-  githubOAuthToken: string; // the long-lived OAuth token used for refreshing
-}
-
-let copilotTokenState: CopilotTokenState | null = null;
-
-// Well-known GitHub OAuth App client_id for CLI/device flow
-// Users can override by setting GITHUB_CLIENT_ID env var
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? "Iv1.b507a08c87ecfe98";
-
-/**
- * Exchange a GitHub OAuth token for a short-lived Copilot API token.
- * The Copilot token is valid for ~30 minutes and works with the Models API.
- */
-async function exchangeForCopilotToken(githubOAuthToken: string): Promise<string> {
-  console.log("[auth] Exchanging GitHub OAuth token for Copilot API token...");
-
-  const response = await fetch("https://api.github.com/copilot_internal/v2/token", {
-    method: "GET",
-    headers: {
-      Authorization: `token ${githubOAuthToken}`,
-      Accept: "application/json",
-      "User-Agent": "Alpha-Code/1.0"
-    }
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    console.error(`[auth] Copilot token exchange failed (${response.status}): ${text.slice(0, 500)}`);
-    throw new Error(
-      `Copilot token exchange failed (HTTP ${response.status}). ` +
-      `Make sure your GitHub account has Copilot access enabled. ` +
-      `Details: ${text.slice(0, 200)}`
-    );
-  }
-
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    throw new Error(`Copilot token exchange returned non-JSON: ${text.slice(0, 200)}`);
-  }
-
-  const token = data.token as string | undefined;
-  const expiresAt = data.expires_at as number | undefined;
-
-  if (!token) {
-    throw new Error(`Copilot token exchange response missing token field: ${text.slice(0, 200)}`);
-  }
-
-  // expires_at is a unix timestamp (seconds). Add a 60s buffer to refresh early.
-  const expiresMs = expiresAt ? expiresAt * 1000 - 60_000 : Date.now() + 25 * 60 * 1000;
-
-  copilotTokenState = {
-    token,
-    expiresAt: expiresMs,
-    githubOAuthToken
-  };
-
-  console.log(`[auth] Copilot token obtained, expires in ~${Math.round((expiresMs - Date.now()) / 60000)}min`);
-  return token;
-}
-
-/**
- * Get a valid Copilot API token, refreshing if needed.
- * Returns undefined if no GitHub OAuth token is available.
- */
-async function getCopilotToken(): Promise<string | undefined> {
-  // If we have a valid (non-expired) Copilot token, return it
-  if (copilotTokenState && Date.now() < copilotTokenState.expiresAt) {
-    return copilotTokenState.token;
-  }
-
-  // Try to refresh using stored GitHub OAuth token
-  const githubOAuthToken = copilotTokenState?.githubOAuthToken
-    ?? storedKeys.get("github-oauth")
-    ?? undefined;
-
-  if (!githubOAuthToken) {
-    return undefined;
-  }
-
-  try {
-    return await exchangeForCopilotToken(githubOAuthToken);
-  } catch (error) {
-    console.error("[auth] Failed to refresh Copilot token:", error instanceof Error ? error.message : error);
-    return undefined;
-  }
-}
+// GitHub Copilot OAuth App client_id — the shared Copilot client
+const COPILOT_CLIENT_ID = process.env.COPILOT_CLIENT_ID ?? "Ov23li8tweQw6odWQebz";
 
 function getKeyForProvider(providerId: string): string | undefined {
-  // Check stored keys first, then env vars
+  if (providerId === "copilot") {
+    // Copilot: OAuth token is the primary auth method
+    const oauthToken = storedKeys.get("copilot-oauth");
+    if (oauthToken) return oauthToken;
+    // Allow env var fallback
+    if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+    return undefined;
+  }
+
+  // Other providers: stored key > env var
   const stored = storedKeys.get(providerId);
   if (stored) return stored;
 
@@ -202,34 +167,20 @@ function getKeyForProvider(providerId: string): string | undefined {
 }
 
 /**
- * Async version of getKeyForProvider that handles Copilot token refresh.
- * For github/copilot-experimental providers, checks if the Copilot token
- * needs refreshing and does so transparently.
+ * Async version of getKeyForProvider — currently just delegates to sync version.
+ * Kept async in case we add token refresh flows in the future.
  */
 async function getKeyForProviderAsync(providerId: string): Promise<string | undefined> {
-  // For GitHub/Copilot providers, use the Copilot token flow
-  if (providerId === "github" || providerId === "copilot-experimental") {
-    const copilotToken = await getCopilotToken();
-    if (copilotToken) {
-      // Update stored keys so sync getKeyForProvider also works
-      storedKeys.set("github", copilotToken);
-      storedKeys.set("copilot-experimental", copilotToken);
-      return copilotToken;
-    }
-    // Fall through to regular key lookup (env var, manual PAT)
-  }
-
   return getKeyForProvider(providerId);
 }
 
 function getAuthMethod(config: ProviderConfig): AuthMethod {
-  // For GitHub/Copilot, check the OAuth token
-  if (config.id === "github" || config.id === "copilot-experimental") {
-    if (storedKeys.has("github-oauth") || copilotTokenState !== null) return "stored_key";
-    if (storedKeys.has(config.id)) return "stored_key";
-  } else {
-    if (storedKeys.has(config.id)) return "stored_key";
+  if (config.id === "copilot") {
+    if (storedKeys.has("copilot-oauth")) return "oauth";
+    if (process.env.GITHUB_TOKEN) return "env";
+    return "none";
   }
+  if (storedKeys.has(config.id)) return "stored_key";
   if (process.env[config.envKey]) return "env";
   return "none";
 }
@@ -241,7 +192,7 @@ async function startGitHubDeviceFlow(): Promise<{
   expiresIn: number;
   interval: number;
 }> {
-  console.log(`[auth] Starting GitHub device flow with client_id: ${GITHUB_CLIENT_ID}`);
+  console.log(`[auth] Starting GitHub Copilot device flow with client_id: ${COPILOT_CLIENT_ID}`);
 
   const response = await fetch("https://github.com/login/device/code", {
     method: "POST",
@@ -250,7 +201,7 @@ async function startGitHubDeviceFlow(): Promise<{
       Accept: "application/json"
     },
     body: JSON.stringify({
-      client_id: GITHUB_CLIENT_ID,
+      client_id: COPILOT_CLIENT_ID,
       scope: "read:user"
     })
   });
@@ -317,7 +268,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
         Accept: "application/json"
       },
       body: JSON.stringify({
-        client_id: GITHUB_CLIENT_ID,
+        client_id: COPILOT_CLIENT_ID,
         device_code: deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code"
       })
@@ -339,26 +290,15 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
 
     if (data.access_token) {
       const oauthToken = String(data.access_token);
-      // Store the OAuth token for future Copilot token refreshes
-      storedKeys.set("github-oauth", oauthToken);
+      // Store as copilot-oauth — this token works with api.githubcopilot.com
+      storedKeys.set("copilot-oauth", oauthToken);
       githubDeviceFlow = null;
-      console.log("[auth] GitHub OAuth completed successfully");
+      console.log("[auth] GitHub Copilot OAuth completed — token stored as copilot-oauth");
 
-      // Exchange OAuth token for Copilot API token
-      try {
-        const copilotToken = await exchangeForCopilotToken(oauthToken);
-        storedKeys.set("github", copilotToken);
-        storedKeys.set("copilot-experimental", copilotToken);
-        console.log("[auth] Copilot token obtained and stored for github + copilot-experimental");
-        return { status: "completed", token: copilotToken };
-      } catch (exchangeError) {
-        const msg = exchangeError instanceof Error ? exchangeError.message : String(exchangeError);
-        console.error("[auth] Copilot token exchange failed:", msg);
-        // Fall back to using the raw OAuth token (may work for some endpoints)
-        storedKeys.set("github", oauthToken);
-        storedKeys.set("copilot-experimental", oauthToken);
-        return { status: "completed", token: oauthToken, error: `Warning: Copilot token exchange failed (${msg}). Using OAuth token directly — some models may not work.` };
-      }
+      // Persist the OAuth token to disk for restart survival
+      void persistAuth();
+
+      return { status: "completed", token: oauthToken };
     }
 
     const errorCode = String(data.error ?? "");
@@ -381,7 +321,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
 
     if (errorCode === "incorrect_client_credentials") {
       githubDeviceFlow = null;
-      return { status: "error", error: "Invalid GitHub OAuth App client_id. Set GITHUB_CLIENT_ID env var with your own GitHub OAuth App client ID." };
+      return { status: "error", error: "Invalid GitHub OAuth App client_id. Set COPILOT_CLIENT_ID env var with your own GitHub OAuth App client ID." };
     }
 
     if (errorCode === "incorrect_device_code") {
@@ -411,36 +351,28 @@ interface ProviderConfig {
   baseUrl: string;
   defaultModel: string;
   modelMap: Record<string, string>;
-  format: "openai" | "anthropic";
+  format: "openai" | "anthropic" | "copilot";
 }
 
 const providerConfigs: ProviderConfig[] = [
   {
-    id: "github",
-    label: "GitHub",
-    envKey: "GITHUB_TOKEN",
-    baseUrl: "https://models.inference.ai.azure.com",
-    defaultModel: "gpt-4o",
-    modelMap: {
-      "GPT-4o": "gpt-4o",
-      "GPT-4o Mini": "gpt-4o-mini",
-      "Auto": "gpt-4o"
-    },
-    format: "openai"
-  },
-  {
-    id: "copilot-experimental",
+    id: "copilot",
     label: "Copilot",
     envKey: "GITHUB_TOKEN",
     baseUrl: "https://api.githubcopilot.com",
-    defaultModel: "gpt-4o",
+    defaultModel: "claude-sonnet-4",
     modelMap: {
+      "Claude Sonnet 4": "claude-sonnet-4",
+      "Claude Sonnet 4.5": "claude-sonnet-4.5",
+      "Claude Opus 4": "claude-opus-4.5",
+      "GPT-4.1": "gpt-4.1",
       "GPT-4o": "gpt-4o",
-      "Claude 3.5 Sonnet": "claude-3.5-sonnet",
-      "GPT-4o Mini": "gpt-4o-mini",
-      "Auto": "gpt-4o"
+      "GPT-5": "gpt-5",
+      "GPT-5 Mini": "gpt-5-mini",
+      "Gemini 2.5 Pro": "gemini-2.5-pro",
+      "Auto": "claude-sonnet-4"
     },
-    format: "openai"
+    format: "copilot"
   },
   {
     id: "openai",
@@ -450,9 +382,12 @@ const providerConfigs: ProviderConfig[] = [
     defaultModel: "gpt-4o",
     modelMap: {
       "GPT-4o": "gpt-4o",
-      "GPT-4o Mini": "gpt-4o-mini",
       "GPT-4.1": "gpt-4.1-2025-04-14",
+      "GPT-4.1 Mini": "gpt-4.1-mini-2025-04-14",
+      "GPT-4.1 Nano": "gpt-4.1-nano-2025-04-14",
+      "o4-mini": "o4-mini",
       "o3-mini": "o3-mini",
+      "GPT-4o Mini": "gpt-4o-mini",
       "Auto": "gpt-4o"
     },
     format: "openai"
@@ -465,6 +400,7 @@ const providerConfigs: ProviderConfig[] = [
     defaultModel: "claude-sonnet-4-20250514",
     modelMap: {
       "Claude Sonnet 4": "claude-sonnet-4-20250514",
+      "Claude Opus 4": "claude-opus-4-20250514",
       "Claude 3.5 Sonnet": "claude-3-5-sonnet-20241022",
       "Claude Haiku 3.5": "claude-3-5-haiku-20241022",
       "Auto": "claude-sonnet-4-20250514"
@@ -479,9 +415,14 @@ const providerConfigs: ProviderConfig[] = [
     defaultModel: "openai/gpt-4o",
     modelMap: {
       "GPT-4o": "openai/gpt-4o",
+      "GPT-4.1": "openai/gpt-4.1",
       "Claude Sonnet 4": "anthropic/claude-sonnet-4-20250514",
+      "Claude Opus 4": "anthropic/claude-opus-4-20250514",
       "Gemini 2.5 Pro": "google/gemini-2.5-pro-preview",
+      "Gemini 2.5 Flash": "google/gemini-2.5-flash-preview",
       "DeepSeek V3": "deepseek/deepseek-chat",
+      "DeepSeek R1": "deepseek/deepseek-reasoner",
+      "Llama 4 Maverick": "meta-llama/llama-4-maverick",
       "Auto": "openai/gpt-4o"
     },
     format: "openai"
@@ -489,15 +430,10 @@ const providerConfigs: ProviderConfig[] = [
 ];
 
 function getProviderStatus(config: ProviderConfig): "connected" | "disconnected" | "experimental" {
-  // For GitHub/Copilot, check if we have either a Copilot token or the OAuth token for refreshing
-  if (config.id === "github" || config.id === "copilot-experimental") {
-    const hasOAuth = storedKeys.has("github-oauth");
-    const hasCopilot = copilotTokenState !== null;
+  if (config.id === "copilot") {
+    const hasOAuth = storedKeys.has("copilot-oauth");
     const hasEnv = !!process.env[config.envKey];
-    const hasStored = storedKeys.has(config.id);
-    if (hasCopilot || hasOAuth || hasEnv || hasStored) {
-      return config.id === "copilot-experimental" ? "experimental" : "connected";
-    }
+    if (hasOAuth || hasEnv) return "connected";
     return "disconnected";
   }
 
@@ -561,10 +497,14 @@ async function callAI(
     if (config.format === "anthropic") {
       return await callAnthropic(config, apiKey, model, chatMessages);
     }
+    if (config.format === "copilot") {
+      return await callCopilot(config, apiKey, model, chatMessages);
+    }
     return await callOpenAICompatible(config, apiKey, model, chatMessages);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ai] ${config.label} error:`, message);
+
     return `[Error] ${config.label} API call failed: ${message}`;
   }
 }
@@ -588,13 +528,48 @@ async function callOpenAICompatible(
     headers["X-Title"] = "Alpha Code";
   }
 
-  // Copilot API requires specific headers
-  if (config.id === "copilot-experimental") {
-    headers["Editor-Version"] = "vscode/1.95.0";
-    headers["Editor-Plugin-Version"] = "copilot/1.0.0";
-    headers["Copilot-Integration-Id"] = "vscode-chat";
-    headers["Openai-Intent"] = "conversation-panel";
+  const body = JSON.stringify({
+    model,
+    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    max_tokens: 4096,
+    temperature: 0.3
+  });
+
+  console.log(`[ai] Calling ${config.label} (${model}) at ${url}`);
+  const response = await fetch(url, { method: "POST", headers, body });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
   }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string };
+  };
+
+  if (data.error) {
+    throw new Error(data.error.message ?? "Unknown API error");
+  }
+
+  return data.choices?.[0]?.message?.content ?? "[No response from model]";
+}
+
+async function callCopilot(
+  config: ProviderConfig,
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[]
+): Promise<string> {
+  const url = `${config.baseUrl}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": "AlphaCode/1.0",
+    "Editor-Version": "AlphaCode/1.0"
+  };
 
   const body = JSON.stringify({
     model,
@@ -757,13 +732,54 @@ async function callOpenAICompatibleStream(
     headers["X-Title"] = "Alpha Code";
   }
 
-  // Copilot API requires specific headers
-  if (config.id === "copilot-experimental") {
-    headers["Editor-Version"] = "vscode/1.95.0";
-    headers["Editor-Plugin-Version"] = "copilot/1.0.0";
-    headers["Copilot-Integration-Id"] = "vscode-chat";
-    headers["Openai-Intent"] = "conversation-panel";
+  const body = JSON.stringify({
+    model,
+    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    max_tokens: 4096,
+    temperature: 0.3,
+    stream: true
+  });
+
+  console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
+  const response = await fetch(url, { method: "POST", headers, body, signal });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
   }
+
+  if (!response.body) {
+    throw new Error("No response body for streaming");
+  }
+
+  return parseSSEStream(
+    response.body,
+    (parsed) => {
+      const choices = parsed.choices as Array<{ delta?: { content?: string } }> | undefined;
+      return choices?.[0]?.delta?.content ?? null;
+    },
+    onToken,
+    signal
+  );
+}
+
+async function callCopilotStream(
+  config: ProviderConfig,
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[],
+  onToken: TokenCallback,
+  signal?: AbortSignal
+): Promise<string> {
+  const url = `${config.baseUrl}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": "AlphaCode/1.0",
+    "Editor-Version": "AlphaCode/1.0"
+  };
 
   const body = JSON.stringify({
     model,
@@ -936,6 +952,9 @@ async function callAIStream(
     if (config.format === "anthropic") {
       return await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
     }
+    if (config.format === "copilot") {
+      return await callCopilotStream(config, apiKey, model, chatMessages, onToken, signal);
+    }
     return await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
   } catch (error) {
     if (signal?.aborted) {
@@ -943,6 +962,7 @@ async function callAIStream(
     }
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ai-stream] ${config.label} error:`, message);
+
     const errMsg = `[Error] ${config.label} API call failed: ${message}`;
     onToken(errMsg);
     return errMsg;
@@ -1066,6 +1086,7 @@ async function buildWorkspaceSnapshot() {
       label: config.label,
       status: getProviderStatus(config),
       model: config.defaultModel,
+      models: Object.keys(config.modelMap).filter((k) => k !== "Auto"),
       method: getAuthMethod(config)
     }))
   });
@@ -1590,6 +1611,7 @@ const server = createServer(async (request, response) => {
       const payload = saveKeyInputSchema.parse(await readJsonBody(request));
       storedKeys.set(payload.provider, payload.key);
       console.log(`[auth] Stored API key for provider: ${payload.provider}`);
+      void persistAuth();
       sendJson(response, 200, { ok: true, provider: payload.provider });
       return;
     }
@@ -1599,6 +1621,7 @@ const server = createServer(async (request, response) => {
       const providerId = request.url.replace("/api/auth/keys/", "");
       storedKeys.delete(providerId);
       console.log(`[auth] Removed stored key for provider: ${providerId}`);
+      void persistAuth();
       sendJson(response, 200, { ok: true, provider: providerId });
       return;
     }
@@ -1651,19 +1674,116 @@ const server = createServer(async (request, response) => {
 });
 
 /* ================================================================
+   WebSocket PTY Terminal Server
+   ================================================================ */
+
+const WS_PORT = Number(process.env.WS_PORT ?? 3031);
+
+// Active PTY sessions keyed by WebSocket
+const activePtySessions = new Map<WebSocket, nodePty.IPty>();
+
+function startTerminalServer(): void {
+  const wss = new WebSocketServer({ port: WS_PORT, host: "127.0.0.1" });
+
+  wss.on("connection", (ws: WebSocket) => {
+    const shell = process.env.SHELL || "/bin/zsh";
+    const ptyProcess = nodePty.spawn(shell, [], {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 30,
+      cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`,
+        TERM: "xterm-256color"
+      } as Record<string, string>
+    });
+
+    activePtySessions.set(ws, ptyProcess);
+    console.log(`[terminal] PTY spawned (pid: ${ptyProcess.pid}, shell: ${shell})`);
+
+    // PTY → WebSocket (shell output)
+    ptyProcess.onData((data: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "output", data }));
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      console.log(`[terminal] PTY exited (code: ${exitCode}, signal: ${signal})`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
+        ws.close();
+      }
+      activePtySessions.delete(ws);
+    });
+
+    // WebSocket → PTY (user input + resize)
+    ws.on("message", (raw: Buffer | string) => {
+      try {
+        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as {
+          type: string;
+          data?: string;
+          cols?: number;
+          rows?: number;
+        };
+
+        if (msg.type === "input" && msg.data) {
+          ptyProcess.write(msg.data);
+        } else if (msg.type === "resize" && msg.cols && msg.rows) {
+          ptyProcess.resize(msg.cols, msg.rows);
+        }
+      } catch {
+        // If raw message is not JSON, treat it as direct input
+        const text = typeof raw === "string" ? raw : raw.toString();
+        ptyProcess.write(text);
+      }
+    });
+
+    ws.on("close", () => {
+      console.log("[terminal] WebSocket closed, killing PTY");
+      ptyProcess.kill();
+      activePtySessions.delete(ws);
+    });
+
+    ws.on("error", (err: Error) => {
+      console.error("[terminal] WebSocket error:", err.message);
+      ptyProcess.kill();
+      activePtySessions.delete(ws);
+    });
+  });
+
+  wss.on("error", (err: Error) => {
+    console.error("[terminal] WebSocket server error:", err.message);
+  });
+
+  console.log(`[terminal] WebSocket PTY server listening on ws://127.0.0.1:${WS_PORT}`);
+}
+
+/* ================================================================
    Startup
    ================================================================ */
 
-// Log which providers are available
-const connectedProviders = providerConfigs.filter((c) => getKeyForProvider(c.id));
-const disconnectedProviders = providerConfigs.filter((c) => !getKeyForProvider(c.id));
+async function startServer(): Promise<void> {
+  // Load persisted auth tokens from disk (GitHub OAuth, manual API keys)
+  await loadPersistedAuth();
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`${APP_NAME} server listening on http://127.0.0.1:${port}`);
-  if (connectedProviders.length > 0) {
-    console.log(`[ai] Connected providers: ${connectedProviders.map((c) => c.label).join(", ")}`);
-  }
-  if (disconnectedProviders.length > 0) {
-    console.log(`[ai] Missing API keys: ${disconnectedProviders.map((c) => `${c.label} (${c.envKey})`).join(", ")}`);
-  }
-});
+  // Start WebSocket PTY terminal server
+  startTerminalServer();
+
+  // Log which providers are available
+  const connectedProviders = providerConfigs.filter((c) => getKeyForProvider(c.id));
+  const disconnectedProviders = providerConfigs.filter((c) => !getKeyForProvider(c.id));
+
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`${APP_NAME} server listening on http://127.0.0.1:${port}`);
+    if (connectedProviders.length > 0) {
+      console.log(`[ai] Connected providers: ${connectedProviders.map((c) => c.label).join(", ")}`);
+    }
+    if (disconnectedProviders.length > 0) {
+      console.log(`[ai] Missing API keys: ${disconnectedProviders.map((c) => `${c.label} (${c.envKey})`).join(", ")}`);
+    }
+  });
+}
+
+void startServer();

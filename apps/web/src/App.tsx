@@ -4,6 +4,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import { Terminal as XTerminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import "@xterm/xterm/css/xterm.css";
 import {
   Bot,
   Braces,
@@ -27,6 +31,8 @@ import {
   LogIn,
   LogOut,
   MessageSquare,
+  Minus,
+  Maximize2,
   PanelRight,
   Play,
   Plus,
@@ -42,6 +48,22 @@ import {
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { APP_NAME, type AuthStatusResponse, type CommandRun, type GitHubDeviceCodeResponse, type GitHubPollResponse, type ProviderId, type SessionDetail, type WorkspaceSnapshot } from "@alpha-code/shared";
 
+/* Electron preload exposes window.alphaCode on desktop */
+interface AlphaCodeBridge {
+  platform: "darwin" | "win32" | "linux";
+  windowControl: (action: "minimize" | "maximize" | "close") => void;
+  openExternal: (url: string) => void;
+}
+declare global {
+  interface Window {
+    alphaCode?: AlphaCodeBridge;
+  }
+}
+
+const electronBridge = window.alphaCode ?? null;
+const isElectron = electronBridge !== null;
+const isMac = electronBridge?.platform === "darwin";
+
 type FileItem = WorkspaceSnapshot["workspace"]["files"][number];
 type DockTab = "terminal" | "changes" | "activity";
 type SidebarTab = "chat" | "files" | "search" | "git" | "settings";
@@ -53,15 +75,8 @@ type FsEntry = {
 };
 
 const serverUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3030";
-const providerModelOptions: Record<string, string[]> = {
-  GitHub: ["GPT-4o", "GPT-4o Mini"],
-  Copilot: ["GPT-4o", "Claude 3.5 Sonnet", "GPT-4o Mini"],
-  OpenAI: ["GPT-4o", "GPT-4o Mini", "GPT-4.1", "o3-mini"],
-  Anthropic: ["Claude Sonnet 4", "Claude 3.5 Sonnet", "Claude Haiku 3.5"],
-  OpenRouter: ["GPT-4o", "Claude Sonnet 4", "Gemini 2.5 Pro", "DeepSeek V3"]
-};
-const defaultModelOptions = ["GPT-4o", "Claude Sonnet 4", "Auto"];
-const terminalPresets = ["pnpm dev", "pnpm -r build", "pnpm -r typecheck"];
+const wsUrl = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:3031";
+
 const railItems: Array<{ key: SidebarTab; icon: typeof MessageSquare; label: string }> = [
   { key: "chat", icon: MessageSquare, label: "Threads" },
   { key: "files", icon: Files, label: "Explorer" },
@@ -97,17 +112,15 @@ export default function App() {
   const [activeFileId, setActiveFileId] = useState("");
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "Copilot");
+  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "GitHub");
   const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "GPT-4o");
   const [prompt, setPrompt] = useState("");
-  const [terminalInput, setTerminalInput] = useState("pnpm dev");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
   const [dockTab, setDockTab] = useState<DockTab>("terminal");
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chat");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [runningCommand, setRunningCommand] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState(() => localStorage.getItem("ac:sessionId") || "");
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -116,9 +129,16 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
-  const [showTerminal, setShowTerminal] = useState(true);
+  const [showTerminal, setShowTerminal] = useState(false);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const terminalOutputRef = useRef<HTMLPreElement>(null);
+
+  // xterm.js terminal state
+  const xtermContainerRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<XTerminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const termWsRef = useRef<WebSocket | null>(null);
+  const [xtermReady, setXtermReady] = useState(false);
 
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
@@ -130,7 +150,6 @@ export default function App() {
   const [githubPolling, setGithubPolling] = useState(false);
   const [githubStarting, setGithubStarting] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
-  const [githubManualToken, setGithubManualToken] = useState(false);
   const githubDeviceRef = useRef<GitHubDeviceCodeResponse | null>(null);
   const githubPollingRef = useRef(false);
 
@@ -139,7 +158,6 @@ export default function App() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const streamingContentRef = useRef("");
-  const terminalEsRef = useRef<EventSource | null>(null);
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
@@ -240,15 +258,6 @@ export default function App() {
     }
   }
 
-  /** Kill a running terminal command */
-  async function handleKillCommand(runId: string) {
-    try {
-      await fetch(`${serverUrl}/api/terminal/runs/${runId}`, { method: "DELETE" });
-    } catch {
-      // Ignore — best effort
-    }
-  }
-
   // Cleanup EventSources on unmount
   useEffect(() => {
     return () => {
@@ -256,12 +265,151 @@ export default function App() {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
-      if (terminalEsRef.current) {
-        terminalEsRef.current.close();
-        terminalEsRef.current = null;
+      // Cleanup xterm
+      if (termWsRef.current) {
+        termWsRef.current.close();
+        termWsRef.current = null;
+      }
+      if (xtermRef.current) {
+        xtermRef.current.dispose();
+        xtermRef.current = null;
       }
     };
   }, []);
+
+  // xterm.js initialization — creates terminal + WebSocket connection when panel is shown
+  useEffect(() => {
+    if (!showTerminal) return;
+    // Wait for the container to be mounted
+    const container = xtermContainerRef.current;
+    if (!container) return;
+    // If already initialized, just re-fit
+    if (xtermRef.current) {
+      requestAnimationFrame(() => fitAddonRef.current?.fit());
+      return;
+    }
+
+    const term = new XTerminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'IBM Plex Mono', 'Menlo', 'Monaco', monospace",
+      lineHeight: 1.4,
+      theme: {
+        background: "#101010",
+        foreground: "rgba(255, 255, 255, 0.85)",
+        cursor: "#fab283",
+        selectionBackground: "rgba(255, 255, 255, 0.15)",
+        black: "#1c1c1c",
+        red: "#fc533a",
+        green: "#12c905",
+        yellow: "#fab283",
+        blue: "#034cff",
+        magenta: "#c678dd",
+        cyan: "#56b6c2",
+        white: "rgba(255, 255, 255, 0.85)",
+        brightBlack: "#5c6370",
+        brightRed: "#e06c75",
+        brightGreen: "#98c379",
+        brightYellow: "#e5c07b",
+        brightBlue: "#61afef",
+        brightMagenta: "#c678dd",
+        brightCyan: "#56b6c2",
+        brightWhite: "#ffffff"
+      }
+    });
+
+    const fitAddon = new FitAddon();
+    const webLinksAddon = new WebLinksAddon((_event, uri) => {
+      if (window.alphaCode?.openExternal) {
+        window.alphaCode.openExternal(uri);
+      } else {
+        window.open(uri, "_blank", "noopener,noreferrer");
+      }
+    });
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+
+    term.open(container);
+    fitAddon.fit();
+
+    xtermRef.current = term;
+    fitAddonRef.current = fitAddon;
+
+    // Connect to WebSocket PTY server
+    const ws = new WebSocket(wsUrl);
+    termWsRef.current = ws;
+
+    ws.onopen = () => {
+      setXtermReady(true);
+      console.log("[terminal] WebSocket connected");
+      // Send initial size
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data as string) as {
+          type: string;
+          data?: string;
+          exitCode?: number;
+          signal?: number;
+        };
+        if (msg.type === "output" && msg.data) {
+          term.write(msg.data);
+        } else if (msg.type === "exit") {
+          term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
+        }
+      } catch {
+        // Ignore malformed
+      }
+    };
+
+    ws.onclose = () => {
+      setXtermReady(false);
+      console.log("[terminal] WebSocket disconnected");
+    };
+
+    ws.onerror = () => {
+      setXtermReady(false);
+    };
+
+    // User input → WebSocket → PTY
+    const inputDisposable = term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+
+    // Handle resize
+    const resizeDisposable = term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    });
+
+    // Re-fit on window resize
+    const handleWindowResize = () => fitAddon.fit();
+    window.addEventListener("resize", handleWindowResize);
+
+    // Also observe the container for size changes (panel resizing)
+    const resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(() => fitAddon.fit());
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      inputDisposable.dispose();
+      resizeDisposable.dispose();
+      window.removeEventListener("resize", handleWindowResize);
+      resizeObserver.disconnect();
+      ws.close();
+      termWsRef.current = null;
+      term.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
+      setXtermReady(false);
+    };
+  }, [showTerminal]);
 
   // Persist key state to localStorage
   useEffect(() => { localStorage.setItem("ac:sessionId", activeSessionId); }, [activeSessionId]);
@@ -668,97 +816,6 @@ export default function App() {
     }
   }
 
-  async function handleRunCommand(nextCommand?: string) {
-    const command = (nextCommand ?? terminalInput).trim();
-    if (!command) {
-      return;
-    }
-
-    // Close any existing terminal stream
-    if (terminalEsRef.current) {
-      terminalEsRef.current.close();
-      terminalEsRef.current = null;
-    }
-
-    setRunningCommand(true);
-    setShowTerminal(true);
-    setDockTab("terminal");
-    setError("");
-    try {
-      const run = await fetchJson<CommandRun>(`${serverUrl}/api/terminal/runs`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ command, sessionId: activeSessionId || undefined })
-      });
-      setTerminalInput(command);
-      setTerminalRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
-
-      // Connect to terminal SSE stream for real-time output
-      const es = new EventSource(`${serverUrl}/api/terminal/runs/${run.id}/stream`);
-      terminalEsRef.current = es;
-
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data) as {
-            type: "init" | "data" | "close";
-            output?: string;
-            text?: string;
-            status?: string;
-            exitCode?: number | null;
-          };
-
-          if (data.type === "init" && data.output) {
-            // Set initial output
-            setTerminalRuns((current) => {
-              const updated = current.map((r) =>
-                r.id === run.id ? { ...r, output: data.output! } : r
-              );
-              return updated;
-            });
-          } else if (data.type === "data" && data.text) {
-            // Append new output
-            setTerminalRuns((current) => {
-              const updated = current.map((r) =>
-                r.id === run.id ? { ...r, output: r.output + data.text! } : r
-              );
-              return updated;
-            });
-          } else if (data.type === "close") {
-            // Command finished
-            setTerminalRuns((current) => {
-              const updated = current.map((r) =>
-                r.id === run.id
-                  ? { ...r, status: (data.status ?? "completed") as CommandRun["status"], exitCode: data.exitCode ?? null, finishedAt: new Date().toISOString() }
-                  : r
-              );
-              return updated;
-            });
-            setRunningCommand(false);
-            es.close();
-            terminalEsRef.current = null;
-            // Reload workspace and session for final state
-            void loadWorkspace().catch(() => undefined);
-            if (activeSessionId) {
-              void loadSession(activeSessionId).catch(() => undefined);
-            }
-          }
-        } catch {
-          // Ignore malformed messages
-        }
-      };
-
-      es.onerror = () => {
-        // Stream error — fall back to polling
-        es.close();
-        terminalEsRef.current = null;
-        setRunningCommand(false);
-      };
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to run command");
-      setRunningCommand(false);
-    }
-  }
-
   function handleNewSession() {
     setActiveSessionId("");
     setSessionDetail(null);
@@ -803,7 +860,7 @@ export default function App() {
   return (
     <main className="shell">
       {/* ===== Titlebar ===== */}
-      <header className="titlebar">
+      <header className={`titlebar${isElectron ? " electron" : ""}${isMac ? " mac" : ""}`}>
         <div className="titlebar-side left">
           <div className="brand-lockup">
             <span className="logo-block" />
@@ -832,33 +889,6 @@ export default function App() {
         </div>
 
         <div className="titlebar-side right">
-          <label className="titlebar-select">
-            <span>{provider}</span>
-            <select value={provider} onChange={(event) => {
-              const newProvider = event.target.value;
-              setProvider(newProvider);
-              const models = providerModelOptions[newProvider] ?? defaultModelOptions;
-              if (!models.includes(model)) {
-                setModel(models[0] ?? "GPT-4o");
-              }
-            }}>
-              {(snapshot?.providers ?? []).map((item) => (
-                <option key={item.id} value={item.label}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="titlebar-select">
-            <span>{model}</span>
-            <select value={model} onChange={(event) => setModel(event.target.value)}>
-              {(providerModelOptions[provider] ?? defaultModelOptions).map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </label>
           <button
             className={`toggle-panel-btn${showTerminal ? " active" : ""}`}
             type="button"
@@ -879,6 +909,36 @@ export default function App() {
             <Plus size={13} />
             <span>New</span>
           </button>
+
+          {/* Custom window controls for Windows/Linux Electron (frameless) */}
+          {isElectron && !isMac && (
+            <div className="window-controls">
+              <button
+                className="window-control-btn"
+                type="button"
+                onClick={() => electronBridge!.windowControl("minimize")}
+                title="Minimize"
+              >
+                <Minus size={14} />
+              </button>
+              <button
+                className="window-control-btn"
+                type="button"
+                onClick={() => electronBridge!.windowControl("maximize")}
+                title="Maximize"
+              >
+                <Maximize2 size={12} />
+              </button>
+              <button
+                className="window-control-btn close"
+                type="button"
+                onClick={() => electronBridge!.windowControl("close")}
+                title="Close"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -903,7 +963,7 @@ export default function App() {
             })}
           </aside>
 
-          <section className="sidebar-panel compact-scroll">
+          <section className="sidebar-panel">
             {sidebarTab === "chat" ? (
               <>
                 <div className="pane-header">
@@ -1080,42 +1140,39 @@ export default function App() {
                   </button>
                 </div>
                 <div className="settings-stack compact-scroll">
-                  {/* GitHub / Copilot — OAuth Device Flow */}
+                  {/* GitHub Copilot — OAuth Device Flow */}
                   <div className="auth-provider-card">
                     <div className="auth-provider-header">
                       <div className="auth-provider-info">
-                        <span className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "github")?.status === "connected" ? "connected" : "disconnected"}`} />
-                        <strong>GitHub / Copilot</strong>
+                        <span className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? "connected" : "disconnected"}`} />
+                        <strong>GitHub Copilot</strong>
                       </div>
                       <span className="auth-method-badge">
-                        {authStatus?.providers.find((p) => p.id === "github")?.method === "env"
+                        {authStatus?.providers.find((p) => p.id === "copilot")?.method === "env"
                           ? "ENV"
-                          : authStatus?.providers.find((p) => p.id === "github")?.method === "stored_key"
+                          : authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth"
                             ? "OAuth"
-                            : authStatus?.providers.find((p) => p.id === "github")?.method === "oauth"
-                              ? "OAuth"
-                              : "—"}
+                            : "—"}
                       </span>
                     </div>
 
-                    {authStatus?.providers.find((p) => p.id === "github")?.status === "connected" ? (
+                    {authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? (
                       <div className="auth-connected-row">
                         <span className="auth-connected-label">
                           <Check size={12} />
                           Connected
                         </span>
-                        {authStatus?.providers.find((p) => p.id === "github")?.method === "stored_key" ? (
+                        {authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth" ? (
                           <button
                             className="auth-remove-btn"
                             type="button"
                             onClick={() => {
-                              void removeApiKey("github");
-                              void removeApiKey("copilot-experimental");
+                              void removeApiKey("copilot-oauth");
                             }}
-                            disabled={removingKey === "github"}
+                            disabled={removingKey === "copilot-oauth"}
                           >
                             <LogOut size={12} />
-                            <span>{removingKey === "github" ? "..." : "Logout"}</span>
+                            <span>Logout</span>
                           </button>
                         ) : null}
                       </div>
@@ -1153,61 +1210,6 @@ export default function App() {
                           Cancel
                         </button>
                       </div>
-                    ) : githubManualToken ? (
-                      <div className="auth-key-input-row">
-                        <p className="auth-helper-text">
-                          Paste a GitHub personal access token (classic or fine-grained).
-                        </p>
-                        <div className="auth-key-input-wrap">
-                          <Key size={12} className="auth-key-icon" />
-                          <input
-                            type={apiKeyVisible["github"] ? "text" : "password"}
-                            value={apiKeyInputs["github"] ?? ""}
-                            onChange={(e) =>
-                              setApiKeyInputs((current) => ({ ...current, github: e.target.value }))
-                            }
-                            placeholder="ghp_... or github_pat_..."
-                          />
-                          <button
-                            className="auth-visibility-btn"
-                            type="button"
-                            onClick={() =>
-                              setApiKeyVisible((current) => ({ ...current, github: !current["github"] }))
-                            }
-                          >
-                            {apiKeyVisible["github"] ? <EyeOff size={12} /> : <Eye size={12} />}
-                          </button>
-                        </div>
-                        <div className="auth-btn-row">
-                          <button
-                            className="auth-text-btn"
-                            type="button"
-                            onClick={() => setGithubManualToken(false)}
-                          >
-                            Back
-                          </button>
-                          <button
-                            className="auth-save-btn"
-                            type="button"
-                            onClick={() => {
-                              const key = (apiKeyInputs["github"] ?? "").trim();
-                              if (key) {
-                                // Save for both github and copilot providers
-                                void saveApiKey("github", key).then(() => saveApiKey("copilot-experimental", key));
-                                setGithubManualToken(false);
-                              }
-                            }}
-                            disabled={!(apiKeyInputs["github"] ?? "").trim() || savingKey === "github"}
-                          >
-                            {savingKey === "github" ? (
-                              <LoaderCircle className="spin" size={12} />
-                            ) : (
-                              <Check size={12} />
-                            )}
-                            <span>Save</span>
-                          </button>
-                        </div>
-                      </div>
                     ) : (
                       <div className="auth-btn-group">
                         <button
@@ -1223,14 +1225,9 @@ export default function App() {
                           )}
                           <span>{githubStarting ? "Starting..." : "Login with GitHub"}</span>
                         </button>
-                        <button
-                          className="auth-text-btn"
-                          type="button"
-                          onClick={() => setGithubManualToken(true)}
-                        >
-                          <Key size={11} />
-                          <span>Use token instead</span>
-                        </button>
+                        <p className="auth-helper-text">
+                          Requires a GitHub Copilot subscription
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1493,7 +1490,7 @@ export default function App() {
                           <span><kbd>{"\u2318"}K</kbd> Search</span>
                           <span><kbd>{"\u2318"}N</kbd> New Session</span>
                           <span><kbd>{"\u2318"}S</kbd> Save File</span>
-                          <span><kbd>{"\u2318"}{"\u21A9"}</kbd> Send Message</span>
+                          <span><kbd>{"\u21A9"}</kbd> Send Message</span>
                         </div>
                       </div>
                     )}
@@ -1531,7 +1528,8 @@ export default function App() {
                             placeholder="Ask Alpha Code to inspect, plan, edit, or review"
                             rows={3}
                             onKeyDown={(event) => {
-                              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                              if (event.key === "Enter" && !event.shiftKey) {
+                                event.preventDefault();
                                 void handleSubmitPrompt();
                               }
                             }}
@@ -1561,7 +1559,44 @@ export default function App() {
                       </div>
                     </div>
                     <div className="dock-tray">
-                      <span>{provider} / {model}</span>
+                      <div className="dock-tray-selectors">
+                        <label className="dock-tray-select">
+                          <span>{provider}</span>
+                          <select
+                            value={provider}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setProvider(next);
+                              localStorage.setItem("ac:provider", next);
+                              // Auto-select first model for this provider
+                              const p = snapshot?.providers.find((p) => p.label === next);
+                              if (p?.models?.[0]) {
+                                setModel(p.models[0]);
+                                localStorage.setItem("ac:model", p.models[0]);
+                              }
+                            }}
+                          >
+                            {(snapshot?.providers ?? []).map((p) => (
+                              <option key={p.id} value={p.label}>{p.label}{p.status === "disconnected" ? " (no key)" : ""}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <span className="dock-tray-sep">/</span>
+                        <label className="dock-tray-select">
+                          <span>{model}</span>
+                          <select
+                            value={model}
+                            onChange={(e) => {
+                              setModel(e.target.value);
+                              localStorage.setItem("ac:model", e.target.value);
+                            }}
+                          >
+                            {(snapshot?.providers.find((p) => p.label === provider)?.models ?? []).map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                       <span>{sessionDetail ? sessionDetail.messages.length + " messages" : "No session"}</span>
                     </div>
                   </div>
@@ -1602,82 +1637,90 @@ export default function App() {
                           </button>
                         </div>
 
-                        <div className="terminal-input-row">
-                          <input
-                            value={terminalInput}
-                            onChange={(event) => setTerminalInput(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                void handleRunCommand();
-                              }
-                            }}
-                          />
-                          <button className="titlebar-action primary" type="button" onClick={() => void handleRunCommand()}>
-                            {runningCommand ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}
-                            <span>Run</span>
-                          </button>
-                          {runningCommand && activeRun && (
-                            <button className="titlebar-action danger" type="button" onClick={() => void handleKillCommand(activeRun.id)}>
-                              <Square size={13} />
-                              <span>Kill</span>
-                            </button>
+                        <div className="terminal-status-row">
+                          {xtermReady ? (
+                            <span className="terminal-connected">
+                              <span className="auth-status-dot connected" /> PTY connected
+                            </span>
+                          ) : (
+                            <span className="terminal-disconnected">
+                              <LoaderCircle className="spin" size={11} /> Connecting...
+                            </span>
                           )}
+                          <div className="terminal-status-actions">
+                            <button
+                              className="toggle-panel-btn"
+                              type="button"
+                              title="Copy terminal content"
+                              onClick={() => {
+                                const term = xtermRef.current;
+                                if (!term) return;
+                                const buf = term.buffer.active;
+                                const lines: string[] = [];
+                                for (let i = 0; i < buf.length; i++) {
+                                  const line = buf.getLine(i);
+                                  if (line) lines.push(line.translateToString(true));
+                                }
+                                const text = lines.join("\n").trimEnd();
+                                if (text) navigator.clipboard.writeText(text);
+                              }}
+                            >
+                              <Copy size={12} />
+                            </button>
+                            <button
+                              className="toggle-panel-btn"
+                              type="button"
+                              onClick={() => setShowTerminal(false)}
+                              title="Close terminal"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="terminal-presets compact-scroll">
-                        {terminalPresets.map((item) => (
-                          <button key={item} className="terminal-preset" type="button" onClick={() => void handleRunCommand(item)}>
-                            {item}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="terminal-body compact-scroll">
+                      <div className="terminal-body">
                         {dockTab === "terminal" ? (
-                          activeRun ? (
-                            <>
-                              <div className="run-meta">
-                                <span>{activeRun.command}</span>
-                                <span className={`run-state ${activeRun.status}`}>{activeRun.status}</span>
-                              </div>
-                              <pre ref={terminalOutputRef} className="terminal-output">{activeRun.output}</pre>
-                            </>
-                          ) : (
-                            <p className="empty-inline">Run a command to see terminal output here.</p>
-                          )
+                          <div
+                            ref={xtermContainerRef}
+                            className="xterm-container"
+                          />
                         ) : null}
 
                         {dockTab === "changes" ? (
-                          changedFiles.length === 0 ? (
-                            <p className="empty-inline">No unsaved files.</p>
-                          ) : (
-                            <div className="changes-grid">
-                              {changedFiles.map((file) => (
-                                <button key={file.id} className="change-row" type="button" onClick={() => openFile(file.id)}>
-                                  <strong>{file.name}</strong>
-                                  <span>{file.path}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )
+                          <div className="terminal-body-scroll compact-scroll">
+                            {changedFiles.length === 0 ? (
+                              <p className="empty-inline">No unsaved files.</p>
+                            ) : (
+                              <div className="changes-grid">
+                                {changedFiles.map((file) => (
+                                  <button key={file.id} className="change-row" type="button" onClick={() => openFile(file.id)}>
+                                    <strong>{file.name}</strong>
+                                    <span>{file.path}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         ) : null}
 
                         {dockTab === "activity" ? (
-                          sessionDetail ? (
-                            <div className="activity-list">
-                              {sessionDetail.messages
-                                .filter((message) => message.role === "system")
-                                .map((message) => (
-                                  <article key={message.id} className="activity-row">
-                                    <span>{message.content}</span>
-                                    <small>{formatTime(message.createdAt)}</small>
-                                  </article>
-                                ))}
-                            </div>
-                          ) : (
-                            <p className="empty-inline">Session activity appears after you start a thread.</p>
-                          )
+                          <div className="terminal-body-scroll compact-scroll">
+                            {sessionDetail ? (
+                              <div className="activity-list">
+                                {sessionDetail.messages
+                                  .filter((message) => message.role === "system")
+                                  .map((message) => (
+                                    <article key={message.id} className="activity-row">
+                                      <span>{message.content}</span>
+                                      <small>{formatTime(message.createdAt)}</small>
+                                    </article>
+                                  ))}
+                              </div>
+                            ) : (
+                              <p className="empty-inline">Session activity appears after you start a thread.</p>
+                            )}
+                          </div>
                         ) : null}
                       </div>
                     </section>
