@@ -1,0 +1,19 @@
+{
+  "name": "@alpha-code/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "pnpm build && electron dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "electron dist/main.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron": "^36.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

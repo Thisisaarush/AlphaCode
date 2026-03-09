@@ -1,101 +1,153 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { AnimatePresence, motion } from "framer-motion";
+import {
+  Bot,
+  ChevronDown,
+  Files,
+  Folder,
+  FolderGit2,
+  GitBranch,
+  MessageSquare,
+  PanelBottom,
+  Play,
+  Search,
+  Settings2,
+  Terminal,
+  X
+} from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { APP_NAME } from "@alpha-code/shared";
 
-type FileNode = {
+type FileItem = {
   id: string;
   name: string;
   path: string;
   language: string;
+  folder: string;
   content: string;
 };
 
-type Workspace = {
+type ProviderItem = {
   id: string;
-  name: string;
-  root: string;
-  files: FileNode[];
+  label: string;
+  status: string;
+  model: string;
 };
 
-const workspaces: Workspace[] = [
-  {
-    id: "alpha",
-    name: "Alpha Code",
-    root: "/Users/aarushtanwar/Developer/alpha-code",
-    files: [
-      {
-        id: "app-shell",
-        name: "App.tsx",
-        path: "apps/web/src/App.tsx",
-        language: "typescript",
-        content: `export function AppShell() {\n  return {\n    workspace: \"Alpha Code\",\n    focus: \"GitHub-first coding workflows\",\n  };\n}`
-      },
-      {
-        id: "roadmap",
-        name: "roadmap.md",
-        path: "docs/roadmap/mvp.md",
-        language: "markdown",
-        content: `# Alpha Code MVP\n\n- Workspace picker\n- Monaco editor shell\n- GitHub-backed model discovery\n- Chat, terminal, and diff workflow\n`
-      },
-      {
-        id: "server",
-        name: "index.ts",
-        path: "apps/server/src/index.ts",
-        language: "typescript",
-        content: `export const bootServer = () => {\n  return \"server scaffold running\";\n};`
-      }
-    ]
-  },
-  {
-    id: "playground",
-    name: "GitHub Sandbox",
-    root: "/Users/aarushtanwar/Developer/github-sandbox",
-    files: [
-      {
-        id: "copilot",
-        name: "github.ts",
-        path: "src/providers/github.ts",
-        language: "typescript",
-        content: `export const githubProvider = {\n  status: \"connect-github\",\n  supportsModelPicker: true,\n  experimentalCopilot: true,\n};`
-      },
-      {
-        id: "notes",
-        name: "notes.md",
-        path: "notes/integration.md",
-        language: "markdown",
-        content: `## GitHub-first roadmap\n\n1. Connect account\n2. Discover available models\n3. Bind model to coding session\n4. Add Copilot experimental path\n`
-      }
-    ]
-  }
-];
+type WorkspaceSnapshot = {
+  workspace: {
+    id: string;
+    name: string;
+    root: string;
+    files: FileItem[];
+  };
+  sessions: Array<{
+    id: string;
+    title: string;
+    status: string;
+    provider: string;
+    model: string;
+    updatedAt: string;
+  }>;
+  suggestions: Array<{
+    id: string;
+    label: string;
+  }>;
+  providers: ProviderItem[];
+};
 
-const activityItems = [
-  "Workspace selection with persisted tabs",
-  "File explorer shell ready for real filesystem wiring",
-  "Monaco editor integrated for VS Code-like editing",
-  "Smooth pane motion prepared for chat and terminal surfaces"
-];
+const railItems = [Files, Search, FolderGit2, MessageSquare, PanelBottom, Settings2];
+const serverUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3030";
 
 export default function App() {
-  const [workspaceId, setWorkspaceId] = useState(workspaces[0].id);
-  const workspace = useMemo(
-    () => workspaces.find((item) => item.id === workspaceId) ?? workspaces[0],
-    [workspaceId]
-  );
-  const [openFileIds, setOpenFileIds] = useState<string[]>([
-    workspace.files[0]?.id ?? ""
-  ]);
-  const [activeFileId, setActiveFileId] = useState(workspace.files[0]?.id ?? "");
-  const [drafts, setDrafts] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      workspaces.flatMap((item) => item.files.map((file) => [file.id, file.content]))
-    )
+  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
+  const [activeFileId, setActiveFileId] = useState("");
+  const [openFileIds, setOpenFileIds] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [provider, setProvider] = useState("GitHub");
+  const [model, setModel] = useState("Auto");
+  const [dockTab, setDockTab] = useState<"terminal" | "changes" | "output">("terminal");
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    async function loadWorkspace() {
+      setLoading(true);
+      const response = await fetch(`${serverUrl}/api/workspace`);
+      const payload = (await response.json()) as WorkspaceSnapshot;
+
+      setSnapshot(payload);
+      setDrafts(
+        Object.fromEntries(payload.workspace.files.map((file) => [file.id, file.content]))
+      );
+
+      const firstFile = payload.workspace.files[0];
+      if (firstFile) {
+        setActiveFileId(firstFile.id);
+        setOpenFileIds([firstFile.id]);
+      }
+
+      const firstProvider = payload.providers[0];
+      if (firstProvider) {
+        setProvider(firstProvider.label);
+        setModel(firstProvider.model);
+      }
+
+      setLoading(false);
+    }
+
+    void loadWorkspace();
+  }, []);
+
+  const files = snapshot?.workspace.files ?? [];
+  const groups = [
+    {
+      label: "apps",
+      items: files.filter((file) => file.path.startsWith("apps/"))
+    },
+    {
+      label: "packages",
+      items: files.filter((file) => file.path.startsWith("packages/"))
+    }
+  ].filter((group) => group.items.length > 0);
+
+  const providerOptions = snapshot?.providers.map((item) => item.label) ?? [];
+  const modelOptions = ["Auto", "Claude Sonnet 4", "GPT-5", "Kimi K2"];
+
+  const activeFile = files.find((file) => file.id === activeFileId) ?? files[0];
+  const openFiles = openFileIds
+    .map((fileId) => files.find((file) => file.id === fileId))
+    .filter((file): file is FileItem => Boolean(file));
+
+  const changedFiles = useMemo(
+    () => files.filter((file) => drafts[file.id] !== file.content),
+    [drafts]
   );
 
-  const openFiles = workspace.files.filter((file) => openFileIds.includes(file.id));
-  const activeFile =
-    workspace.files.find((file) => file.id === activeFileId) ?? workspace.files[0];
+  async function saveActiveFile() {
+    if (!activeFile) {
+      return;
+    }
+
+    setSaving(true);
+    await fetch(`${serverUrl}/api/file`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: activeFile.path,
+        content: drafts[activeFile.id] ?? activeFile.content
+      })
+    });
+
+    const response = await fetch(`${serverUrl}/api/workspace`);
+    const payload = (await response.json()) as WorkspaceSnapshot;
+    setSnapshot(payload);
+    setSaving(false);
+  }
 
   const openFile = (fileId: string) => {
     setOpenFileIds((current) =>
@@ -107,214 +159,346 @@ export default function App() {
   const closeFile = (fileId: string) => {
     setOpenFileIds((current) => current.filter((item) => item !== fileId));
     if (activeFileId === fileId) {
-      const nextFile = openFiles.find((file) => file.id !== fileId) ?? workspace.files[0];
-      setActiveFileId(nextFile?.id ?? "");
+      const nextId = openFiles.find((file) => file.id !== fileId)?.id ?? files[0].id;
+      setActiveFileId(nextId);
     }
   };
 
+  if (loading || !snapshot || !activeFile) {
+    return (
+      <main className="loading-shell">
+        <div className="loading-panel">
+          <span className="brand-dot" />
+          <strong>{APP_NAME}</strong>
+          <p>Connecting workspace</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <main className="workspace-shell">
-      <motion.header
-        className="topbar"
-        initial={{ opacity: 0, y: -24 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, ease: "easeOut" }}
-      >
-        <div>
-          <p className="eyebrow">Phase 2</p>
-          <h1>{APP_NAME}</h1>
-        </div>
-
-        <div className="workspace-switcher">
-          <label htmlFor="workspace-select">Workspace</label>
-          <select
-            id="workspace-select"
-            value={workspace.id}
-            onChange={(event) => {
-              const nextId = event.target.value;
-              const nextWorkspace =
-                workspaces.find((item) => item.id === nextId) ?? workspaces[0];
-              setWorkspaceId(nextWorkspace.id);
-              setOpenFileIds([nextWorkspace.files[0]?.id ?? ""]);
-              setActiveFileId(nextWorkspace.files[0]?.id ?? "");
-            }}
-          >
-            {workspaces.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </motion.header>
-
-      <section className="workspace-meta">
-        <div className="meta-card">
-          <span className="meta-label">Current root</span>
-          <strong>{workspace.root}</strong>
-        </div>
-        <div className="meta-card">
-          <span className="meta-label">Shell status</span>
-          <strong>Explorer, tabs, and editor live</strong>
-        </div>
-        <div className="meta-card">
-          <span className="meta-label">Next surface</span>
-          <strong>Server-backed file system and session persistence</strong>
-        </div>
-      </section>
-
-      <section className="studio-layout">
-        <motion.aside
-          className="sidebar-panel"
-          initial={{ opacity: 0, x: -18 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.4, delay: 0.08, ease: "easeOut" }}
-        >
-          <div className="panel-heading">
-            <div>
-              <p className="panel-label">Explorer</p>
-              <h2>Project files</h2>
-            </div>
-            <span className="chip">{workspace.files.length} files</span>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="topbar-left">
+          <div className="brand-lockup">
+            <span className="brand-dot" />
+            <strong>{APP_NAME}</strong>
           </div>
 
-          <div className="file-tree">
-            {workspace.files.map((file, index) => {
-              const isActive = file.id === activeFile.id;
+          <div className="workspace-badge">
+            <Folder size={14} />
+            <span>{snapshot.workspace.name}</span>
+          </div>
 
-              return (
-                <motion.button
-                  key={file.id}
-                  className={`file-row${isActive ? " file-row-active" : ""}`}
-                  onClick={() => openFile(file.id)}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.06 * index, duration: 0.22 }}
+          <div className="workspace-badge">
+            <GitBranch size={14} />
+            <span>main</span>
+          </div>
+        </div>
+
+        <div className="topbar-right">
+          <label className="topbar-select">
+            <span>Provider</span>
+            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+              {providerOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="topbar-select">
+            <span>Model</span>
+            <select value={model} onChange={(event) => setModel(event.target.value)}>
+                {modelOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button className="run-button" type="button">
+            <Play size={14} />
+            <span>Run</span>
+          </button>
+        </div>
+      </header>
+
+      <PanelGroup autoSaveId="alpha-code-shell" className="layout-shell" direction="horizontal">
+        <Panel defaultSize={21} minSize={16} className="explorer-wrapper">
+          <div className="side-layout">
+            <nav className="icon-rail" aria-label="Primary navigation">
+              {railItems.map((Icon, index) => (
+                <button
+                  key={index}
+                  className={`rail-button${index === 0 ? " rail-button-active" : ""}`}
+                  type="button"
                 >
-                  <span className="file-language">{file.language.slice(0, 2)}</span>
-                  <span>
-                    <strong>{file.name}</strong>
-                    <small>{file.path}</small>
-                  </span>
-                </motion.button>
-              );
-            })}
-          </div>
-        </motion.aside>
+                  <Icon size={16} />
+                </button>
+              ))}
+            </nav>
 
-        <motion.section
-          className="editor-panel"
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.42, delay: 0.1, ease: "easeOut" }}
-        >
-          <div className="panel-heading editor-heading">
-            <div>
-              <p className="panel-label">Editor</p>
-              <h2>Workspace shell</h2>
-            </div>
-            <button className="save-button" type="button">
-              Save draft
-            </button>
-          </div>
+            <section className="explorer-panel">
+              <div className="panel-titlebar">
+                <div>
+                  <span className="panel-eyebrow">Explorer</span>
+                  <h2>Workspace</h2>
+                </div>
+                <button className="titlebar-action" type="button">
+                  <Search size={14} />
+                </button>
+              </div>
 
-          <div className="tab-strip">
-            <AnimatePresence initial={false}>
-              {openFiles.map((file) => {
-                const isActive = file.id === activeFile.id;
-                return (
-                  <motion.button
-                    key={file.id}
-                    className={`tab-button${isActive ? " tab-button-active" : ""}`}
-                    onClick={() => setActiveFileId(file.id)}
-                    layout
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ duration: 0.18 }}
+              <div className="explorer-scroll">
+                {groups.map((group) => (
+                  <section className="tree-group" key={group.label}>
+                    <button className="tree-folder" type="button">
+                      <ChevronDown size={14} />
+                    <span>{group.label}</span>
+                    </button>
+
+                    <div className="tree-items">
+                      {group.items.map((file) => {
+                        const active = file.id === activeFile.id;
+                        const dirty = changedFiles.some((changedFile) => changedFile.id === file.id);
+
+                        return (
+                          <button
+                            key={file.id}
+                            className={`tree-file${active ? " tree-file-active" : ""}`}
+                            onClick={() => openFile(file.id)}
+                            type="button"
+                          >
+                            <span className="tree-file-name">{file.path.replace(`${group.label}/`, "")}</span>
+                            {dirty ? <span className="dirty-dot" /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
+          </div>
+        </Panel>
+
+        <PanelResizeHandle className="resize-handle resize-handle-vertical" />
+
+        <Panel minSize={38} className="center-wrapper">
+          <PanelGroup autoSaveId="alpha-code-center" direction="vertical">
+            <Panel defaultSize={74} minSize={44} className="editor-wrapper">
+              <section className="editor-panel">
+                <div className="editor-toolbar">
+                  <div className="breadcrumbs">
+                    <span>workspace</span>
+                    <span>{activeFile.folder}</span>
+                    <strong>{activeFile.name}</strong>
+                  </div>
+                  <div className="editor-actions">
+                    <button className="titlebar-action" type="button">
+                      <Files size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="tabs-strip">
+                  <AnimatePresence initial={false}>
+                    {openFiles.map((file) => {
+                      const active = file.id === activeFile.id;
+                      const dirty = changedFiles.some((changedFile) => changedFile.id === file.id);
+
+                      return (
+                        <motion.button
+                          key={file.id}
+                          layout
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          transition={{ duration: 0.18 }}
+                          className={`tab-chip${active ? " tab-chip-active" : ""}`}
+                          onClick={() => setActiveFileId(file.id)}
+                          type="button"
+                        >
+                          <span>{file.name}</span>
+                          {dirty ? <span className="dirty-dot" /> : null}
+                          {openFiles.length > 1 ? (
+                            <span
+                              className="tab-close"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                closeFile(file.id);
+                              }}
+                            >
+                              <X size={12} />
+                            </span>
+                          ) : null}
+                        </motion.button>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+
+                <div className="editor-surface">
+                  <Editor
+                    height="100%"
+                    language={activeFile.language}
+                    theme="vs-dark"
+                    value={drafts[activeFile.id] ?? activeFile.content}
+                    onChange={(value) => {
+                      setDrafts((current) => ({
+                        ...current,
+                        [activeFile.id]: value ?? ""
+                      }));
+                    }}
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      lineHeight: 20,
+                      smoothScrolling: true,
+                      automaticLayout: true,
+                      scrollBeyondLastLine: false,
+                      roundedSelection: false,
+                      wordWrap: "off",
+                      padding: { top: 16 }
+                    }}
+                  />
+                </div>
+
+                <div className="editor-footer">
+                  <span>{activeFile.path}</span>
+                  <button className="save-button" onClick={() => void saveActiveFile()} type="button">
+                    {saving ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              </section>
+            </Panel>
+
+            <PanelResizeHandle className="resize-handle resize-handle-horizontal" />
+
+            <Panel defaultSize={26} minSize={18} className="dock-wrapper">
+              <section className="dock-panel">
+                <div className="dock-tabs">
+                  <button
+                    className={`dock-tab${dockTab === "terminal" ? " dock-tab-active" : ""}`}
+                    onClick={() => setDockTab("terminal")}
+                    type="button"
                   >
-                    <span>{file.name}</span>
-                    {openFiles.length > 1 ? (
-                      <span
-                        className="tab-close"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          closeFile(file.id);
-                        }}
-                      >
-                        x
-                      </span>
-                    ) : null}
-                  </motion.button>
-                );
-              })}
-            </AnimatePresence>
-          </div>
+                    <Terminal size={14} />
+                    <span>Terminal</span>
+                  </button>
+                  <button
+                    className={`dock-tab${dockTab === "changes" ? " dock-tab-active" : ""}`}
+                    onClick={() => setDockTab("changes")}
+                    type="button"
+                  >
+                    <FolderGit2 size={14} />
+                    <span>Changes</span>
+                  </button>
+                  <button
+                    className={`dock-tab${dockTab === "output" ? " dock-tab-active" : ""}`}
+                    onClick={() => setDockTab("output")}
+                    type="button"
+                  >
+                    <Bot size={14} />
+                    <span>Output</span>
+                  </button>
+                </div>
 
-          <div className="editor-instance">
-            <Editor
-              height="100%"
-              theme="vs-dark"
-              language={activeFile.language}
-              value={drafts[activeFile.id] ?? activeFile.content}
-              onChange={(value) => {
-                setDrafts((current) => ({
-                  ...current,
-                  [activeFile.id]: value ?? ""
-                }));
-              }}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 14,
-                fontLigatures: true,
-                smoothScrolling: true,
-                scrollBeyondLastLine: false,
-                padding: { top: 16 },
-                automaticLayout: true
-              }}
-            />
-          </div>
-        </motion.section>
+                <div className="dock-content">
+                  {dockTab === "terminal" ? (
+                    <div className="terminal-view">
+                      <span className="terminal-prompt">$</span>
+                      <span className="terminal-placeholder">Waiting for runtime connection</span>
+                    </div>
+                  ) : null}
 
-        <motion.aside
-          className="activity-panel"
-          initial={{ opacity: 0, x: 18 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.4, delay: 0.14, ease: "easeOut" }}
-        >
-          <div className="panel-heading">
-            <div>
-              <p className="panel-label">Build status</p>
-              <h2>Phase progress</h2>
+                  {dockTab === "changes" ? (
+                    <div className="changes-list">
+                      {changedFiles.length === 0 ? (
+                        <p className="empty-copy">No unsaved changes</p>
+                      ) : (
+                        changedFiles.map((file) => (
+                          <article className="change-item" key={file.id}>
+                            <strong>{file.name}</strong>
+                            <span>{file.path}</span>
+                          </article>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+
+                  {dockTab === "output" ? (
+                    <div className="output-view">
+                      <p className="empty-copy">No active task output</p>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            </Panel>
+          </PanelGroup>
+        </Panel>
+
+        <PanelResizeHandle className="resize-handle resize-handle-vertical" />
+
+        <Panel defaultSize={26} minSize={20} className="assistant-wrapper">
+          <section className="assistant-panel">
+            <div className="panel-titlebar">
+              <div>
+                <span className="panel-eyebrow">Agent</span>
+                <h2>Session</h2>
+              </div>
+              <button className="titlebar-action" type="button">
+                <MessageSquare size={14} />
+              </button>
             </div>
-            <span className="chip chip-live">live</span>
-          </div>
 
-          <div className="activity-list">
-            {activityItems.map((item, index) => (
-              <motion.article
-                key={item}
-                className="activity-item"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.07 * index, duration: 0.24 }}
-              >
-                <span className="activity-index">0{index + 1}</span>
-                <p>{item}</p>
-              </motion.article>
-            ))}
-          </div>
+            <div className="session-header">
+              <div className="workspace-badge workspace-badge-quiet">
+                <Bot size={14} />
+                <span>{provider}</span>
+              </div>
+              <div className="workspace-badge workspace-badge-quiet">
+                <span>{model}</span>
+              </div>
+            </div>
 
-          <div className="inspector-card">
-            <span className="meta-label">Active file</span>
-            <strong>{activeFile.path}</strong>
-            <p>
-              This is currently using mocked workspace data so we can refine the
-              shell before wiring the local runtime and real filesystem access.
-            </p>
-          </div>
-        </motion.aside>
-      </section>
+            <div className="conversation-panel">
+              <div className="empty-thread">
+                <Bot size={18} />
+                <strong>No active session</strong>
+                <p>Choose context and start a task.</p>
+              </div>
+            </div>
+
+            <div className="context-strip">
+              <span className="context-chip">@file</span>
+              <span className="context-chip">@selection</span>
+              <span className="context-chip">@terminal</span>
+            </div>
+
+            <div className="composer">
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                placeholder="Ask Alpha Code"
+                rows={4}
+              />
+
+              <div className="composer-actions">
+                <button className="attach-button" type="button">
+                  Attach
+                </button>
+                <button className="send-button" type="button">
+                  Send
+                </button>
+              </div>
+            </div>
+          </section>
+        </Panel>
+      </PanelGroup>
     </main>
   );
 }

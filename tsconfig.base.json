@@ -11,6 +11,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "declaration": false,
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "@alpha-code/shared": ["packages/shared/src/index.ts"]
+    }
   }
 }
