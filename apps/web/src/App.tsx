@@ -66,7 +66,7 @@ const isMac = electronBridge?.platform === "darwin";
 
 type FileItem = WorkspaceSnapshot["workspace"]["files"][number];
 type DockTab = "terminal" | "changes" | "activity";
-type SidebarTab = "chat" | "files" | "search" | "git" | "settings";
+type SidebarTab = "chat" | "git";
 type FsEntry = {
   name: string;
   path: string;
@@ -79,10 +79,7 @@ const wsUrl = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:3031";
 
 const railItems: Array<{ key: SidebarTab; icon: typeof MessageSquare; label: string }> = [
   { key: "chat", icon: MessageSquare, label: "Threads" },
-  { key: "files", icon: Files, label: "Explorer" },
-  { key: "search", icon: Search, label: "Search" },
-  { key: "git", icon: FolderGit2, label: "Changes" },
-  { key: "settings", icon: Settings2, label: "Settings" }
+  { key: "git", icon: FolderGit2, label: "Changes" }
 ];
 
 function formatTime(value: string) {
@@ -90,6 +87,72 @@ function formatTime(value: string) {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+/** Convert raw model IDs into human-friendly display names */
+function prettifyModelId(raw: string): string {
+  // Known exact mappings
+  const known: Record<string, string> = {
+    "gpt-4": "GPT 4",
+    "gpt-4-turbo": "GPT 4 Turbo",
+    "gpt-4o": "GPT 4o",
+    "gpt-4o-mini": "GPT 4o Mini",
+    "gpt-4.1": "GPT 4.1",
+    "gpt-4.1-mini": "GPT 4.1 Mini",
+    "gpt-4.1-nano": "GPT 4.1 Nano",
+    "gpt-4.5-preview": "GPT 4.5 Preview",
+    "gpt-5": "GPT 5",
+    "gpt-5.3": "GPT 5.3",
+    "gpt-5.4": "GPT 5.4",
+    "gpt-5-mini": "GPT 5 Mini",
+    "gpt-5-turbo": "GPT 5 Turbo",
+    "o1": "O1",
+    "o1-mini": "O1 Mini",
+    "o1-preview": "O1 Preview",
+    "o3": "O3",
+    "o3-mini": "O3 Mini",
+    "o4-mini": "O4 Mini",
+    "chatgpt-4o-latest": "ChatGPT 4o Latest",
+  };
+
+  // Strip date suffixes like -20250514, -2025-04-14
+  const stripped = raw.replace(/-\d{4}-?\d{2}-?\d{2}$/, "").replace(/-\d{8}$/, "");
+  if (known[stripped]) return known[stripped];
+  if (known[raw]) return known[raw];
+
+  // OpenRouter format: provider/model-name
+  if (raw.includes("/")) {
+    const parts = raw.split("/");
+    const modelPart = parts[parts.length - 1] ?? raw;
+    return prettifyModelId(modelPart);
+  }
+
+  // Claude models
+  if (stripped.startsWith("claude-")) {
+    return stripped
+      .replace("claude-", "Claude ")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Gemini models
+  if (stripped.startsWith("gemini-")) {
+    return stripped
+      .replace("gemini-", "Gemini ")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Generic: remove dashes, capitalize words
+  return stripped
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function groupFiles(files: FileItem[]) {
@@ -158,6 +221,23 @@ export default function App() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const streamingContentRef = useRef("");
+
+  // Overlay state
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSearchPopup, setShowSearchPopup] = useState(false);
+  const searchPopupRef = useRef<HTMLInputElement>(null);
+
+  // Model toggles — persisted to localStorage, keyed by raw model ID
+  const [disabledModels, setDisabledModels] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ac:disabledModels") || "{}") as Record<string, boolean>;
+    } catch { return {}; }
+  });
+
+  // Chat autocomplete state
+  const [autocompleteType, setAutocompleteType] = useState<"@" | "/" | null>(null);
+  const [autocompleteQuery, setAutocompleteQuery] = useState("");
+  const [autocompleteIndex, setAutocompleteIndex] = useState(0);
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
@@ -411,22 +491,28 @@ export default function App() {
     };
   }, [showTerminal]);
 
+  // Re-fit terminal when switching back to the terminal dock tab
+  useEffect(() => {
+    if (dockTab === "terminal" && xtermRef.current && fitAddonRef.current) {
+      requestAnimationFrame(() => fitAddonRef.current?.fit());
+    }
+  }, [dockTab]);
+
   // Persist key state to localStorage
   useEffect(() => { localStorage.setItem("ac:sessionId", activeSessionId); }, [activeSessionId]);
   useEffect(() => { localStorage.setItem("ac:provider", provider); }, [provider]);
   useEffect(() => { localStorage.setItem("ac:model", model); }, [model]);
+  useEffect(() => { localStorage.setItem("ac:disabledModels", JSON.stringify(disabledModels)); }, [disabledModels]);
 
   // Global keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Cmd+K — open search panel and focus input
+      // Cmd+K — open search popup
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setSidebarTab("search");
-        // Focus the search input after React renders
+        setShowSearchPopup(true);
         requestAnimationFrame(() => {
-          const input = document.querySelector<HTMLInputElement>(".search-panel input");
-          input?.focus();
+          searchPopupRef.current?.focus();
         });
       }
       // Cmd+N — new session
@@ -439,14 +525,21 @@ export default function App() {
         e.preventDefault();
         void handleSaveFile();
       }
-      // Escape — close search / clear error
+      // Escape — close overlays / clear error
       if (e.key === "Escape") {
-        if (error) setError("");
+        if (showSearchPopup) { setShowSearchPopup(false); setSearchQuery(""); }
+        else if (showSettings) setShowSettings(false);
+        else if (error) setError("");
+      }
+      // Cmd+, — open settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setShowSettings((v) => !v);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [error]);
+  }, [error, showSearchPopup, showSettings]);
 
   async function loadWorkspace() {
     const payload = await fetchJson<WorkspaceSnapshot>(`${serverUrl}/api/workspace`);
@@ -878,7 +971,7 @@ export default function App() {
         </div>
 
         <div className="titlebar-center">
-          <button className="command-palette" type="button" onClick={() => setSidebarTab("search")}>
+          <button className="command-palette" type="button" onClick={() => { setShowSearchPopup(true); requestAnimationFrame(() => searchPopupRef.current?.focus()); }}>
             <Search size={13} />
             <span>Search files, sessions, commands</span>
             <kbd>Cmd K</kbd>
@@ -958,6 +1051,15 @@ export default function App() {
                 </button>
               );
             })}
+            <div className="rail-spacer" />
+            <button
+              className={`rail-button${showSettings ? " active" : ""}`}
+              type="button"
+              title="Settings"
+              onClick={() => setShowSettings((v) => !v)}
+            >
+              <Settings2 size={16} />
+            </button>
           </aside>
 
           <section className="sidebar-panel">
@@ -1019,88 +1121,6 @@ export default function App() {
               </>
             ) : null}
 
-            {sidebarTab === "files" ? (
-              <>
-                <div className="pane-header">
-                  <div>
-                    <span className="pane-kicker">Workspace</span>
-                    <h2>Explorer</h2>
-                  </div>
-                  <button className="pane-button" type="button" onClick={() => void loadFs("apps")}>
-                    <Files size={12} />
-                    <span>Refresh</span>
-                  </button>
-                </div>
-
-                <div className="fs-path-row">
-                  <button className="path-chip" type="button" onClick={() => void loadFs("apps")}>
-                    apps
-                  </button>
-                  <button className="path-chip" type="button" onClick={() => void loadFs("packages")}>
-                    packages
-                  </button>
-                  <button className="path-chip" type="button" onClick={() => void loadFs(".")}>
-                    root
-                  </button>
-                </div>
-
-                <div className="file-system-list compact-scroll">
-                  {fsEntries.map((entry) => (
-                    <button
-                      key={entry.path}
-                      className="fs-entry"
-                      type="button"
-                      onClick={() => {
-                        if (entry.type === "directory") {
-                          void loadFs(entry.path);
-                          return;
-                        }
-                        const file = files.find((item) => item.path === entry.path);
-                        if (file) {
-                          openFile(file.id);
-                        }
-                      }}
-                    >
-                      <span className="fs-entry-icon">
-                        {entry.type === "directory" ? <ChevronRight size={12} /> : <FileCode2 size={12} />}
-                      </span>
-                      <span className="fs-entry-label">{entry.path}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="sidebar-footer-note compact">
-                  <span>Path</span>
-                  <strong>{fsPath}</strong>
-                </div>
-              </>
-            ) : null}
-
-            {sidebarTab === "search" ? (
-              <>
-                <div className="pane-header">
-                  <div>
-                    <span className="pane-kicker">Search</span>
-                    <h2>Workspace Search</h2>
-                  </div>
-                </div>
-                <div className="search-panel">
-                  <input
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="Search file paths and content"
-                  />
-                </div>
-                <div className="search-results compact-scroll">
-                  {filteredFiles.slice(0, 80).map((file) => (
-                    <button key={file.id} className="search-result" type="button" onClick={() => openFile(file.id)}>
-                      <strong>{file.name}</strong>
-                      <span>{file.path}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-
             {sidebarTab === "git" ? (
               <>
                 <div className="pane-header">
@@ -1120,211 +1140,6 @@ export default function App() {
                       </button>
                     ))
                   )}
-                </div>
-              </>
-            ) : null}
-
-            {sidebarTab === "settings" ? (
-              <>
-                <div className="pane-header">
-                  <div>
-                    <span className="pane-kicker">Settings</span>
-                    <h2>Providers</h2>
-                  </div>
-                  <button className="pane-button" type="button" onClick={() => void loadAuthStatus()}>
-                    <Search size={12} />
-                    <span>Refresh</span>
-                  </button>
-                </div>
-                <div className="settings-stack compact-scroll">
-                  {/* GitHub Copilot — OAuth Device Flow */}
-                  <div className="auth-provider-card">
-                    <div className="auth-provider-header">
-                      <div className="auth-provider-info">
-                        <span className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? "connected" : "disconnected"}`} />
-                        <strong>GitHub Copilot</strong>
-                      </div>
-                      <span className="auth-method-badge">
-                        {authStatus?.providers.find((p) => p.id === "copilot")?.method === "env"
-                          ? "ENV"
-                          : authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth"
-                            ? "OAuth"
-                            : "—"}
-                      </span>
-                    </div>
-
-                    {authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? (
-                      <div className="auth-connected-row">
-                        <span className="auth-connected-label">
-                          <Check size={12} />
-                          Connected
-                        </span>
-                        {authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth" ? (
-                          <button
-                            className="auth-remove-btn"
-                            type="button"
-                            onClick={() => {
-                              void removeApiKey("copilot-oauth");
-                            }}
-                            disabled={removingKey === "copilot-oauth"}
-                          >
-                            <LogOut size={12} />
-                            <span>Logout</span>
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : githubDevice ? (
-                      <div className="github-device-flow">
-                        <p className="device-flow-instruction">
-                          Go to <a href={githubDevice.verificationUri} target="_blank" rel="noopener noreferrer">
-                            {githubDevice.verificationUri} <ExternalLink size={11} />
-                          </a> and enter the code:
-                        </p>
-                        <div className="device-code-display">
-                          <code>{githubDevice.userCode}</code>
-                          <button
-                            className="copy-code-btn"
-                            type="button"
-                            onClick={() => copyToClipboard(githubDevice.userCode)}
-                          >
-                            {copiedCode ? <Check size={12} /> : <Copy size={12} />}
-                          </button>
-                        </div>
-                        {githubPolling ? (
-                          <div className="device-flow-polling">
-                            <LoaderCircle className="spin" size={13} />
-                            <span>Waiting for authorization...</span>
-                          </div>
-                        ) : null}
-                        <button
-                          className="auth-text-btn"
-                          type="button"
-                          onClick={() => {
-                            setGithubPolling(false);
-                            setGithubDevice(null);
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="auth-btn-group">
-                        <button
-                          className="auth-login-btn"
-                          type="button"
-                          onClick={() => void startGitHubLogin()}
-                          disabled={githubStarting}
-                        >
-                          {githubStarting ? (
-                            <LoaderCircle className="spin" size={13} />
-                          ) : (
-                            <LogIn size={13} />
-                          )}
-                          <span>{githubStarting ? "Starting..." : "Login with GitHub"}</span>
-                        </button>
-                        <p className="auth-helper-text">
-                          Requires a GitHub Copilot subscription
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* API Key providers: OpenAI, Anthropic, OpenRouter */}
-                  {(["openai", "anthropic", "openrouter"] as const).map((providerId) => {
-                    const providerInfo = authStatus?.providers.find((p) => p.id === providerId);
-                    const isConnected = providerInfo?.status === "connected";
-                    const method = providerInfo?.method ?? "none";
-                    const label = providerInfo?.label ?? providerId;
-                    const keyInput = apiKeyInputs[providerId] ?? "";
-                    const isVisible = apiKeyVisible[providerId] ?? false;
-
-                    return (
-                      <div key={providerId} className="auth-provider-card">
-                        <div className="auth-provider-header">
-                          <div className="auth-provider-info">
-                            <span className={`auth-status-dot ${isConnected ? "connected" : "disconnected"}`} />
-                            <strong>{label}</strong>
-                          </div>
-                          <span className="auth-method-badge">
-                            {method === "env" ? "ENV" : method === "stored_key" ? "Key" : "—"}
-                          </span>
-                        </div>
-
-                        {isConnected ? (
-                          <div className="auth-connected-row">
-                            <span className="auth-connected-label">
-                              <Check size={12} />
-                              Connected
-                            </span>
-                            {method === "stored_key" ? (
-                              <button
-                                className="auth-remove-btn"
-                                type="button"
-                                onClick={() => void removeApiKey(providerId)}
-                                disabled={removingKey === providerId}
-                              >
-                                <X size={12} />
-                                <span>{removingKey === providerId ? "..." : "Remove"}</span>
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="auth-key-input-row">
-                            <div className="auth-key-input-wrap">
-                              <Key size={12} className="auth-key-icon" />
-                              <input
-                                type={isVisible ? "text" : "password"}
-                                value={keyInput}
-                                onChange={(e) =>
-                                  setApiKeyInputs((current) => ({ ...current, [providerId]: e.target.value }))
-                                }
-                                placeholder={`Paste ${label} API key`}
-                              />
-                              <button
-                                className="auth-visibility-btn"
-                                type="button"
-                                onClick={() =>
-                                  setApiKeyVisible((current) => ({ ...current, [providerId]: !isVisible }))
-                                }
-                              >
-                                {isVisible ? <EyeOff size={12} /> : <Eye size={12} />}
-                              </button>
-                            </div>
-                            <button
-                              className="auth-save-btn"
-                              type="button"
-                              onClick={() => void saveApiKey(providerId, keyInput)}
-                              disabled={!keyInput.trim() || savingKey === providerId}
-                            >
-                              {savingKey === providerId ? (
-                                <LoaderCircle className="spin" size={12} />
-                              ) : (
-                                <Check size={12} />
-                              )}
-                              <span>{savingKey === providerId ? "..." : "Save"}</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {/* Environment info */}
-                  <div className="auth-section-divider">
-                    <span>Environment</span>
-                  </div>
-                  <div className="setting-row">
-                    <span>Server</span>
-                    <strong>{serverUrl}</strong>
-                  </div>
-                  <div className="setting-row">
-                    <span>Workspace</span>
-                    <strong>{snapshot?.workspace.root}</strong>
-                  </div>
-                  <div className="setting-row">
-                    <span>Desktop shell</span>
-                    <strong>Electron</strong>
-                  </div>
                 </div>
               </>
             ) : null}
@@ -1468,14 +1283,14 @@ export default function App() {
                               <span>Run commands in your project</span>
                             </div>
                           </button>
-                          <button className="welcome-card" type="button" onClick={() => setSidebarTab("files")}>
+                          <button className="welcome-card" type="button" onClick={() => setShowRightPanel(true)}>
                             <Files size={16} />
                             <div>
                               <strong>Browse Files</strong>
                               <span>Explore your project tree</span>
                             </div>
                           </button>
-                          <button className="welcome-card" type="button" onClick={() => setSidebarTab("settings")}>
+                          <button className="welcome-card" type="button" onClick={() => setShowSettings(true)}>
                             <Settings2 size={16} />
                             <div>
                               <strong>Settings</strong>
@@ -1509,6 +1324,27 @@ export default function App() {
                     </div>
                   ) : null}
 
+                  {/* Quick-action chips — shown after assistant response or when no messages */}
+                  {!isStreaming && sessionDetail && sessionDetail.messages.length > 0 && sessionDetail.messages[sessionDetail.messages.length - 1]?.role === "assistant" ? (
+                    <div className="suggestion-chips">
+                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Explain what this code does")}>
+                        Explain this
+                      </button>
+                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Find and fix any bugs")}>
+                        Fix bugs
+                      </button>
+                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Add error handling")}>
+                        Add error handling
+                      </button>
+                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Write tests for this")}>
+                        Write tests
+                      </button>
+                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Refactor for better readability")}>
+                        Refactor
+                      </button>
+                    </div>
+                  ) : null}
+
                   {/* Floating dock composer */}
                   <div className="dock-area">
                     <div className="dock-surface">
@@ -1518,13 +1354,108 @@ export default function App() {
                           <span className="context-chip">@terminal</span>
                           <span className="context-chip">/plan</span>
                         </div>
-                        <div className="dock-textarea-wrap">
+                        <div className="dock-textarea-wrap" style={{ position: "relative" }}>
+                          {/* Autocomplete popup */}
+                          {autocompleteType && (() => {
+                            const atItems = [
+                              { label: "@file", desc: "Reference a file", icon: <FileCode2 size={13} /> },
+                              { label: "@terminal", desc: "Terminal context", icon: <TerminalSquare size={13} /> },
+                              { label: "@workspace", desc: "Workspace context", icon: <Files size={13} /> },
+                              { label: "@selection", desc: "Selected code", icon: <Braces size={13} /> },
+                            ];
+                            const slashItems = [
+                              { label: "/plan", desc: "Create an implementation plan", icon: <Sparkles size={13} /> },
+                              { label: "/review", desc: "Review code changes", icon: <Search size={13} /> },
+                              { label: "/fix", desc: "Fix errors and bugs", icon: <Settings2 size={13} /> },
+                              { label: "/explain", desc: "Explain code", icon: <MessageSquare size={13} /> },
+                              { label: "/test", desc: "Write tests", icon: <FileCode2 size={13} /> },
+                              { label: "/refactor", desc: "Refactor code", icon: <Braces size={13} /> },
+                            ];
+                            const items = autocompleteType === "@" ? atItems : slashItems;
+                            const filtered = autocompleteQuery
+                              ? items.filter((i) => i.label.toLowerCase().includes(autocompleteQuery.toLowerCase()))
+                              : items;
+                            if (filtered.length === 0) return null;
+                            return (
+                              <div className="autocomplete-popup">
+                                {filtered.map((item, idx) => (
+                                  <button
+                                    key={item.label}
+                                    type="button"
+                                    className={`autocomplete-item${idx === autocompleteIndex ? " selected" : ""}`}
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      // Insert the command into prompt
+                                      const before = prompt.slice(0, prompt.lastIndexOf(autocompleteType === "@" ? "@" : "/"));
+                                      setPrompt(before + item.label + " ");
+                                      setAutocompleteType(null);
+                                      setAutocompleteQuery("");
+                                      setAutocompleteIndex(0);
+                                    }}
+                                  >
+                                    {item.icon}
+                                    <span className="autocomplete-item-label">{item.label}</span>
+                                    <span className="autocomplete-item-desc">{item.desc}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            );
+                          })()}
                           <textarea
                             value={prompt}
-                            onChange={(event) => setPrompt(event.target.value)}
+                            onChange={(event) => {
+                              const val = event.target.value;
+                              setPrompt(val);
+                              // Detect @ or / trigger
+                              const cursor = event.target.selectionStart ?? val.length;
+                              const textBefore = val.slice(0, cursor);
+                              const atMatch = textBefore.match(/@(\w*)$/);
+                              const slashMatch = textBefore.match(/\/(\w*)$/);
+                              if (atMatch) {
+                                setAutocompleteType("@");
+                                setAutocompleteQuery(atMatch[0]);
+                                setAutocompleteIndex(0);
+                              } else if (slashMatch && (textBefore === slashMatch[0] || textBefore[textBefore.length - slashMatch[0].length - 1] === " " || textBefore[textBefore.length - slashMatch[0].length - 1] === "\n")) {
+                                setAutocompleteType("/");
+                                setAutocompleteQuery(slashMatch[0]);
+                                setAutocompleteIndex(0);
+                              } else {
+                                setAutocompleteType(null);
+                                setAutocompleteQuery("");
+                              }
+                            }}
                             placeholder="Ask Alpha Code to inspect, plan, edit, or review"
                             rows={3}
                             onKeyDown={(event) => {
+                              if (autocompleteType) {
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  setAutocompleteType(null);
+                                  return;
+                                }
+                                if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+                                  // Accept autocomplete if visible
+                                  event.preventDefault();
+                                  // Simulate clicking the selected item
+                                  const popup = document.querySelector(".autocomplete-item.selected") as HTMLButtonElement | null;
+                                  if (popup) {
+                                    popup.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                                  } else {
+                                    if (event.key === "Enter") void handleSubmitPrompt();
+                                  }
+                                  return;
+                                }
+                                if (event.key === "ArrowDown") {
+                                  event.preventDefault();
+                                  setAutocompleteIndex((i) => i + 1);
+                                  return;
+                                }
+                                if (event.key === "ArrowUp") {
+                                  event.preventDefault();
+                                  setAutocompleteIndex((i) => Math.max(0, i - 1));
+                                  return;
+                                }
+                              }
                               if (event.key === "Enter" && !event.shiftKey) {
                                 event.preventDefault();
                                 void handleSubmitPrompt();
@@ -1565,11 +1496,12 @@ export default function App() {
                               const next = e.target.value;
                               setProvider(next);
                               localStorage.setItem("ac:provider", next);
-                              // Auto-select first model for this provider
+                              // Auto-select first enabled model for this provider
                               const p = snapshot?.providers.find((p) => p.label === next);
-                              if (p?.models?.[0]) {
-                                setModel(p.models[0]);
-                                localStorage.setItem("ac:model", p.models[0]);
+                              const firstEnabled = (p?.models ?? []).find((m) => !disabledModels[m]);
+                              if (firstEnabled) {
+                                setModel(firstEnabled);
+                                localStorage.setItem("ac:model", firstEnabled);
                               }
                             }}
                           >
@@ -1580,7 +1512,7 @@ export default function App() {
                         </label>
                         <span className="dock-tray-sep">/</span>
                         <label className="dock-tray-select">
-                          <span>{model}</span>
+                          <span>{prettifyModelId(model)}</span>
                           <select
                             value={model}
                             onChange={(e) => {
@@ -1588,9 +1520,11 @@ export default function App() {
                               localStorage.setItem("ac:model", e.target.value);
                             }}
                           >
-                            {(snapshot?.providers.find((p) => p.label === provider)?.models ?? []).map((m) => (
-                              <option key={m} value={m}>{m}</option>
-                            ))}
+                            {(snapshot?.providers.find((p) => p.label === provider)?.models ?? [])
+                              .filter((m) => !disabledModels[m])
+                              .map((m) => (
+                                <option key={m} value={m}>{prettifyModelId(m)}</option>
+                              ))}
                           </select>
                         </label>
                       </div>
@@ -1677,12 +1611,11 @@ export default function App() {
                       </div>
 
                       <div className="terminal-body">
-                        {dockTab === "terminal" ? (
-                          <div
-                            ref={xtermContainerRef}
-                            className="xterm-container"
-                          />
-                        ) : null}
+                        <div
+                          ref={xtermContainerRef}
+                          className="xterm-container"
+                          style={{ display: dockTab === "terminal" ? "block" : "none" }}
+                        />
 
                         {dockTab === "changes" ? (
                           <div className="terminal-body-scroll compact-scroll">
@@ -1774,6 +1707,35 @@ export default function App() {
                   </div>
 
                   <div className="editor-layout">
+                    <div className="editor-pane">
+                      {activeFile ? (
+                        <Editor
+                          height="100%"
+                          language={activeFile.language}
+                          theme="vs-dark"
+                          value={drafts[activeFile.id] ?? activeFile.content}
+                          onChange={(value) => {
+                            setDrafts((current) => ({
+                              ...current,
+                              [activeFile.id]: value ?? ""
+                            }));
+                          }}
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            lineHeight: 20,
+                            automaticLayout: true,
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                            padding: { top: 10 },
+                            wordWrap: "off"
+                          }}
+                        />
+                      ) : (
+                        <div className="empty-editor">Open a file to edit.</div>
+                      )}
+                    </div>
+
                     <div className="editor-sidebar compact-scroll">
                       {groupedFiles.map((group) => {
                         const expanded = expandedGroups[group.label] ?? true;
@@ -1815,35 +1777,6 @@ export default function App() {
                         );
                       })}
                     </div>
-
-                    <div className="editor-pane">
-                      {activeFile ? (
-                        <Editor
-                          height="100%"
-                          language={activeFile.language}
-                          theme="vs-dark"
-                          value={drafts[activeFile.id] ?? activeFile.content}
-                          onChange={(value) => {
-                            setDrafts((current) => ({
-                              ...current,
-                              [activeFile.id]: value ?? ""
-                            }));
-                          }}
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 13,
-                            lineHeight: 20,
-                            automaticLayout: true,
-                            scrollBeyondLastLine: false,
-                            smoothScrolling: true,
-                            padding: { top: 10 },
-                            wordWrap: "off"
-                          }}
-                        />
-                      ) : (
-                        <div className="empty-editor">Open a file to edit.</div>
-                      )}
-                    </div>
                   </div>
 
                   <div className="context-footer">
@@ -1862,6 +1795,311 @@ export default function App() {
           ) : null}
         </PanelGroup>
       </div>
+
+      {/* ===== Settings overlay ===== */}
+      {showSettings ? (
+        <div className="overlay-backdrop" onClick={() => setShowSettings(false)}>
+          <div className="overlay-panel settings-overlay" onClick={(e) => e.stopPropagation()}>
+            <div className="overlay-header">
+              <h2>Settings</h2>
+              <button className="overlay-close" type="button" onClick={() => setShowSettings(false)}>
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="overlay-body compact-scroll">
+              {/* --- Provider Auth Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Providers</h3>
+
+                {/* GitHub Copilot — OAuth Device Flow */}
+                <div className="auth-provider-card">
+                  <div className="auth-provider-header">
+                    <div className="auth-provider-info">
+                      <span className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? "connected" : "disconnected"}`} />
+                      <strong>GitHub Copilot</strong>
+                    </div>
+                    <span className="auth-method-badge">
+                      {authStatus?.providers.find((p) => p.id === "copilot")?.method === "env"
+                        ? "ENV"
+                        : authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth"
+                          ? "OAuth"
+                          : "—"}
+                    </span>
+                  </div>
+
+                  {authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? (
+                    <div className="auth-connected-row">
+                      <span className="auth-connected-label">
+                        <Check size={12} />
+                        Connected
+                      </span>
+                      {authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth" ? (
+                        <button
+                          className="auth-remove-btn"
+                          type="button"
+                          onClick={() => {
+                            void removeApiKey("copilot-oauth");
+                          }}
+                          disabled={removingKey === "copilot-oauth"}
+                        >
+                          <LogOut size={12} />
+                          <span>Logout</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : githubDevice ? (
+                    <div className="github-device-flow">
+                      <p className="device-flow-instruction">
+                        Go to <a href={githubDevice.verificationUri} target="_blank" rel="noopener noreferrer">
+                          {githubDevice.verificationUri} <ExternalLink size={11} />
+                        </a> and enter the code:
+                      </p>
+                      <div className="device-code-display">
+                        <code>{githubDevice.userCode}</code>
+                        <button
+                          className="copy-code-btn"
+                          type="button"
+                          onClick={() => copyToClipboard(githubDevice.userCode)}
+                        >
+                          {copiedCode ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                      </div>
+                      {githubPolling ? (
+                        <div className="device-flow-polling">
+                          <LoaderCircle className="spin" size={13} />
+                          <span>Waiting for authorization...</span>
+                        </div>
+                      ) : null}
+                      <button
+                        className="auth-text-btn"
+                        type="button"
+                        onClick={() => {
+                          setGithubPolling(false);
+                          setGithubDevice(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="auth-btn-group">
+                      <button
+                        className="auth-login-btn"
+                        type="button"
+                        onClick={() => void startGitHubLogin()}
+                        disabled={githubStarting}
+                      >
+                        {githubStarting ? (
+                          <LoaderCircle className="spin" size={13} />
+                        ) : (
+                          <LogIn size={13} />
+                        )}
+                        <span>{githubStarting ? "Starting..." : "Login with GitHub"}</span>
+                      </button>
+                      <p className="auth-helper-text">
+                        Requires a GitHub Copilot subscription
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* API Key providers: OpenAI, Anthropic, OpenRouter */}
+                {(["openai", "anthropic", "openrouter"] as const).map((providerId) => {
+                  const providerInfo = authStatus?.providers.find((p) => p.id === providerId);
+                  const isConnected = providerInfo?.status === "connected";
+                  const method = providerInfo?.method ?? "none";
+                  const labelText = providerInfo?.label ?? providerId;
+                  const keyInput = apiKeyInputs[providerId] ?? "";
+                  const isVisible = apiKeyVisible[providerId] ?? false;
+
+                  return (
+                    <div key={providerId} className="auth-provider-card">
+                      <div className="auth-provider-header">
+                        <div className="auth-provider-info">
+                          <span className={`auth-status-dot ${isConnected ? "connected" : "disconnected"}`} />
+                          <strong>{labelText}</strong>
+                        </div>
+                        <span className="auth-method-badge">
+                          {method === "env" ? "ENV" : method === "stored_key" ? "Key" : "—"}
+                        </span>
+                      </div>
+
+                      {isConnected ? (
+                        <div className="auth-connected-row">
+                          <span className="auth-connected-label">
+                            <Check size={12} />
+                            Connected
+                          </span>
+                          {method === "stored_key" ? (
+                            <button
+                              className="auth-remove-btn"
+                              type="button"
+                              onClick={() => void removeApiKey(providerId)}
+                              disabled={removingKey === providerId}
+                            >
+                              <X size={12} />
+                              <span>{removingKey === providerId ? "..." : "Remove"}</span>
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="auth-key-input-row">
+                          <div className="auth-key-input-wrap">
+                            <Key size={12} className="auth-key-icon" />
+                            <input
+                              type={isVisible ? "text" : "password"}
+                              value={keyInput}
+                              onChange={(e) =>
+                                setApiKeyInputs((current) => ({ ...current, [providerId]: e.target.value }))
+                              }
+                              placeholder={`Paste ${labelText} API key`}
+                            />
+                            <button
+                              className="auth-visibility-btn"
+                              type="button"
+                              onClick={() =>
+                                setApiKeyVisible((current) => ({ ...current, [providerId]: !isVisible }))
+                              }
+                            >
+                              {isVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                            </button>
+                          </div>
+                          <button
+                            className="auth-save-btn"
+                            type="button"
+                            onClick={() => void saveApiKey(providerId, keyInput)}
+                            disabled={!keyInput.trim() || savingKey === providerId}
+                          >
+                            {savingKey === providerId ? (
+                              <LoaderCircle className="spin" size={12} />
+                            ) : (
+                              <Check size={12} />
+                            )}
+                            <span>{savingKey === providerId ? "..." : "Save"}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* --- Model Toggles Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Models</h3>
+                <p className="overlay-section-desc">Enable or disable models per provider. Only enabled models appear in the model dropdown.</p>
+                {(snapshot?.providers ?? []).map((prov) => (
+                  <div key={prov.id} className="model-toggle-group">
+                    <div className="model-toggle-provider">{prov.label}</div>
+                    {(prov.models ?? []).map((m) => {
+                      const isOff = disabledModels[m] === true;
+                      return (
+                        <label key={m} className="model-toggle-row">
+                          <span className="model-toggle-name" title={m}>{prettifyModelId(m)}</span>
+                          <span className="model-toggle-raw">{m}</span>
+                          <button
+                            type="button"
+                            className={`model-toggle-switch${isOff ? "" : " on"}`}
+                            onClick={() => setDisabledModels((prev) => ({ ...prev, [m]: !isOff }))}
+                          >
+                            <span className="model-toggle-knob" />
+                          </button>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              {/* --- Environment Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Environment</h3>
+                <div className="setting-row">
+                  <span>Server</span>
+                  <strong>{serverUrl}</strong>
+                </div>
+                <div className="setting-row">
+                  <span>Workspace</span>
+                  <strong>{snapshot?.workspace.root}</strong>
+                </div>
+                <div className="setting-row">
+                  <span>Desktop shell</span>
+                  <strong>Electron</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===== Search popup (Cmd+K) ===== */}
+      {showSearchPopup ? (
+        <div className="overlay-backdrop" onClick={() => { setShowSearchPopup(false); setSearchQuery(""); }}>
+          <div className="search-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="search-popup-input-row">
+              <Search size={14} className="search-popup-icon" />
+              <input
+                ref={searchPopupRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search files, sessions, and commands..."
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setShowSearchPopup(false);
+                    setSearchQuery("");
+                  }
+                  if (e.key === "Enter") {
+                    const hit = filteredFiles[0];
+                    if (hit) {
+                      openFile(hit.id);
+                      setShowRightPanel(true);
+                      setShowSearchPopup(false);
+                      setSearchQuery("");
+                    }
+                  }
+                }}
+              />
+            </div>
+            <div className="search-popup-results compact-scroll">
+              {searchQuery.trim() ? (
+                filteredFiles.length > 0 ? (
+                  filteredFiles.slice(0, 20).map((file) => (
+                    <button
+                      key={file.id}
+                      className="search-popup-result"
+                      type="button"
+                      onClick={() => {
+                        openFile(file.id);
+                        setShowRightPanel(true);
+                        setShowSearchPopup(false);
+                        setSearchQuery("");
+                      }}
+                    >
+                      <FileCode2 size={13} />
+                      <div className="search-popup-result-text">
+                        <strong>{file.name}</strong>
+                        <span>{file.path}</span>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="search-popup-empty">No results</div>
+                )
+              ) : (
+                <div className="search-popup-hint">
+                  <span>Type to search files and content</span>
+                  <div className="search-popup-shortcuts">
+                    <span><kbd>Enter</kbd> Open file</span>
+                    <span><kbd>Esc</kbd> Close</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {error ? (
         <div className="toast-error">
