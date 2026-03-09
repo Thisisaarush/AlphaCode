@@ -2,8 +2,9 @@
   color-scheme: dark;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   background:
-    radial-gradient(circle at top, rgba(58, 97, 134, 0.28), transparent 40%),
-    linear-gradient(180deg, #08111c 0%, #05080d 100%);
+    radial-gradient(circle at top left, rgba(53, 89, 123, 0.32), transparent 32%),
+    radial-gradient(circle at top right, rgba(192, 118, 62, 0.18), transparent 26%),
+    linear-gradient(180deg, #071018 0%, #04070b 100%);
   color: #ecf4ff;
 }
 
@@ -14,34 +15,45 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: transparent;
 }
 
 #root {
   min-height: 100vh;
 }
 
-.app-shell {
+.workspace-shell {
   min-height: 100vh;
-  padding: 48px 24px;
+  padding: 28px;
   display: grid;
-  gap: 24px;
+  gap: 18px;
 }
 
-.hero-panel,
-.roadmap-card {
+.topbar,
+.meta-card,
+.sidebar-panel,
+.editor-panel,
+.activity-panel,
+.inspector-card,
+.file-row,
+.tab-button {
   backdrop-filter: blur(20px);
   background: rgba(12, 20, 31, 0.74);
   border: 1px solid rgba(138, 173, 216, 0.16);
-  border-radius: 24px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.2);
 }
 
-.hero-panel {
-  padding: 32px;
+.topbar {
+  padding: 22px 24px;
+  border-radius: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
 }
 
 .eyebrow {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   color: #8db7e8;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -50,57 +62,229 @@ body {
 
 h1 {
   margin: 0;
-  font-size: clamp(2.5rem, 5vw, 4.75rem);
-  line-height: 0.95;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 0.98;
 }
 
-.hero-copy {
-  max-width: 58ch;
-  margin: 20px 0 0;
-  font-size: 1.05rem;
-  line-height: 1.7;
-  color: rgba(236, 244, 255, 0.82);
-}
-
-.roadmap-grid {
+.workspace-switcher {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 18px;
+  gap: 8px;
+  min-width: 250px;
 }
 
-.roadmap-card {
-  padding: 22px;
-  min-height: 140px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  transform: translateY(0);
-  transition: transform 180ms ease, border-color 180ms ease;
+.workspace-switcher label,
+.meta-label,
+.panel-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(141, 183, 232, 0.7);
 }
 
-.roadmap-card:hover {
-  transform: translateY(-4px);
+.workspace-switcher select,
+.save-button {
+  border: 1px solid rgba(141, 183, 232, 0.18);
+  background: rgba(5, 9, 14, 0.8);
+  color: #ecf4ff;
+  border-radius: 14px;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.save-button {
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.save-button:hover {
+  transform: translateY(-1px);
   border-color: rgba(141, 183, 232, 0.38);
 }
 
-.card-index {
+.workspace-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.meta-card {
+  border-radius: 18px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.meta-card strong {
+  font-size: 0.98rem;
+}
+
+.studio-layout {
+  min-height: calc(100vh - 230px);
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  gap: 16px;
+}
+
+.sidebar-panel,
+.editor-panel,
+.activity-panel {
+  border-radius: 24px;
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+}
+
+.sidebar-panel,
+.activity-panel {
+  align-content: start;
+}
+
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.panel-heading h2 {
+  margin: 6px 0 0;
+  font-size: 1.2rem;
+}
+
+.editor-heading {
+  align-items: center;
+}
+
+.chip {
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(15, 31, 52, 0.9);
+  color: #9dc4ee;
   font-size: 0.8rem;
-  letter-spacing: 0.12em;
+  border: 1px solid rgba(157, 196, 238, 0.16);
+}
+
+.chip-live {
+  background: rgba(37, 74, 56, 0.7);
+  color: #9de7c1;
+  border-color: rgba(157, 231, 193, 0.18);
+}
+
+.file-tree,
+.activity-list {
+  display: grid;
+  gap: 10px;
+}
+
+.file-row {
+  width: 100%;
+  border-radius: 18px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.file-row:hover,
+.file-row-active {
+  transform: translateY(-1px);
+  border-color: rgba(141, 183, 232, 0.36);
+  background: rgba(17, 28, 41, 0.95);
+}
+
+.file-language {
+  border-radius: 12px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  background: rgba(77, 110, 145, 0.18);
+  color: #9dc4ee;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+
+.file-row strong,
+.file-row small {
+  display: block;
+}
+
+.file-row small {
+  margin-top: 6px;
+  color: rgba(236, 244, 255, 0.58);
+}
+
+.tab-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.tab-button {
+  border-radius: 16px;
+  padding: 10px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.tab-button-active {
+  border-color: rgba(141, 183, 232, 0.38);
+  background: rgba(18, 31, 47, 0.95);
+}
+
+.tab-close {
+  color: rgba(236, 244, 255, 0.6);
+}
+
+.editor-instance {
+  min-height: 520px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(138, 173, 216, 0.14);
+}
+
+.activity-item,
+.inspector-card {
+  border-radius: 18px;
+  border: 1px solid rgba(138, 173, 216, 0.12);
+  background: rgba(12, 18, 27, 0.75);
+  padding: 16px;
+}
+
+.activity-item p,
+.inspector-card p {
+  margin: 10px 0 0;
+  color: rgba(236, 244, 255, 0.76);
+  line-height: 1.6;
+}
+
+.activity-index {
+  font-size: 0.74rem;
   color: #8db7e8;
+  letter-spacing: 0.12em;
 }
 
-.roadmap-card p {
-  margin: 24px 0 0;
-  font-size: 1rem;
-  line-height: 1.5;
+@media (max-width: 1080px) {
+  .workspace-meta,
+  .studio-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
-@media (max-width: 640px) {
-  .app-shell {
-    padding: 24px 16px;
+@media (max-width: 720px) {
+  .workspace-shell {
+    padding: 18px;
   }
 
-  .hero-panel {
-    padding: 24px;
+  .topbar {
+    padding: 18px;
+    grid-template-columns: 1fr;
+    display: grid;
   }
 }
