@@ -112,8 +112,8 @@ export default function App() {
   const [activeFileId, setActiveFileId] = useState("");
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "GitHub");
-  const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "GPT-4o");
+  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "");
+  const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "");
   const [prompt, setPrompt] = useState("");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
   const [dockTab, setDockTab] = useState<DockTab>("terminal");
@@ -492,9 +492,6 @@ export default function App() {
 
     const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`);
     setSessionDetail(payload);
-    // Restore provider/model from session
-    if (payload.provider) setProvider(payload.provider);
-    if (payload.model) setModel(payload.model);
     setTerminalRuns((current) => {
       const merged = [...payload.commandRuns, ...current.filter((item) => !payload.commandRuns.some((run) => run.id === item.id))];
       return merged.slice(0, 12);

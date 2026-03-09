@@ -292,6 +292,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
       const oauthToken = String(data.access_token);
       // Store as copilot-oauth — this token works with api.githubcopilot.com
       storedKeys.set("copilot-oauth", oauthToken);
+      invalidateModelCache("copilot");
       githubDeviceFlow = null;
       console.log("[auth] GitHub Copilot OAuth completed — token stored as copilot-oauth");
 
@@ -350,7 +351,8 @@ interface ProviderConfig {
   envKey: string;
   baseUrl: string;
   defaultModel: string;
-  modelMap: Record<string, string>;
+  /** Fallback static model IDs when dynamic fetch fails */
+  fallbackModels: string[];
   format: "openai" | "anthropic" | "copilot";
 }
 
@@ -361,17 +363,10 @@ const providerConfigs: ProviderConfig[] = [
     envKey: "GITHUB_TOKEN",
     baseUrl: "https://api.githubcopilot.com",
     defaultModel: "claude-sonnet-4",
-    modelMap: {
-      "Claude Sonnet 4": "claude-sonnet-4",
-      "Claude Sonnet 4.5": "claude-sonnet-4.5",
-      "Claude Opus 4": "claude-opus-4.5",
-      "GPT-4.1": "gpt-4.1",
-      "GPT-4o": "gpt-4o",
-      "GPT-5": "gpt-5",
-      "GPT-5 Mini": "gpt-5-mini",
-      "Gemini 2.5 Pro": "gemini-2.5-pro",
-      "Auto": "claude-sonnet-4"
-    },
+    fallbackModels: [
+      "claude-sonnet-4", "claude-sonnet-4.5", "claude-opus-4.5",
+      "gpt-4.1", "gpt-4o", "gpt-5", "gpt-5-mini", "gemini-2.5-pro"
+    ],
     format: "copilot"
   },
   {
@@ -380,16 +375,10 @@ const providerConfigs: ProviderConfig[] = [
     envKey: "OPENAI_API_KEY",
     baseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4o",
-    modelMap: {
-      "GPT-4o": "gpt-4o",
-      "GPT-4.1": "gpt-4.1-2025-04-14",
-      "GPT-4.1 Mini": "gpt-4.1-mini-2025-04-14",
-      "GPT-4.1 Nano": "gpt-4.1-nano-2025-04-14",
-      "o4-mini": "o4-mini",
-      "o3-mini": "o3-mini",
-      "GPT-4o Mini": "gpt-4o-mini",
-      "Auto": "gpt-4o"
-    },
+    fallbackModels: [
+      "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+      "gpt-4o-mini", "o4-mini", "o3-mini"
+    ],
     format: "openai"
   },
   {
@@ -398,13 +387,10 @@ const providerConfigs: ProviderConfig[] = [
     envKey: "ANTHROPIC_API_KEY",
     baseUrl: "https://api.anthropic.com/v1",
     defaultModel: "claude-sonnet-4-20250514",
-    modelMap: {
-      "Claude Sonnet 4": "claude-sonnet-4-20250514",
-      "Claude Opus 4": "claude-opus-4-20250514",
-      "Claude 3.5 Sonnet": "claude-3-5-sonnet-20241022",
-      "Claude Haiku 3.5": "claude-3-5-haiku-20241022",
-      "Auto": "claude-sonnet-4-20250514"
-    },
+    fallbackModels: [
+      "claude-sonnet-4-20250514", "claude-opus-4-20250514",
+      "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"
+    ],
     format: "anthropic"
   },
   {
@@ -413,18 +399,12 @@ const providerConfigs: ProviderConfig[] = [
     envKey: "OPENROUTER_API_KEY",
     baseUrl: "https://openrouter.ai/api/v1",
     defaultModel: "openai/gpt-4o",
-    modelMap: {
-      "GPT-4o": "openai/gpt-4o",
-      "GPT-4.1": "openai/gpt-4.1",
-      "Claude Sonnet 4": "anthropic/claude-sonnet-4-20250514",
-      "Claude Opus 4": "anthropic/claude-opus-4-20250514",
-      "Gemini 2.5 Pro": "google/gemini-2.5-pro-preview",
-      "Gemini 2.5 Flash": "google/gemini-2.5-flash-preview",
-      "DeepSeek V3": "deepseek/deepseek-chat",
-      "DeepSeek R1": "deepseek/deepseek-reasoner",
-      "Llama 4 Maverick": "meta-llama/llama-4-maverick",
-      "Auto": "openai/gpt-4o"
-    },
+    fallbackModels: [
+      "openai/gpt-4o", "openai/gpt-4.1", "anthropic/claude-sonnet-4-20250514",
+      "anthropic/claude-opus-4-20250514", "google/gemini-2.5-pro-preview",
+      "google/gemini-2.5-flash-preview", "deepseek/deepseek-chat",
+      "deepseek/deepseek-reasoner", "meta-llama/llama-4-maverick"
+    ],
     format: "openai"
   }
 ];
@@ -442,12 +422,120 @@ function getProviderStatus(config: ProviderConfig): "connected" | "disconnected"
   return "connected";
 }
 
+/* ================================================================
+   Dynamic Model Fetching — queries each provider's API for available models
+   ================================================================ */
+
+interface ModelCache {
+  models: string[];
+  fetchedAt: number;
+}
+
+const modelCache = new Map<string, ModelCache>();
+const MODEL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/** OpenAI chat model prefixes — filter out embedding, TTS, whisper, DALL-E etc. */
+const OPENAI_CHAT_PREFIXES = ["gpt-", "o1", "o3", "o4", "chatgpt-"];
+const OPENAI_EXCLUDE_PATTERNS = ["realtime", "audio", "search", "transcribe"];
+
+async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]> {
+  const apiKey = await getKeyForProviderAsync(config.id);
+  if (!apiKey) return config.fallbackModels;
+
+  // Check cache
+  const cached = modelCache.get(config.id);
+  if (cached && Date.now() - cached.fetchedAt < MODEL_CACHE_TTL) {
+    return cached.models;
+  }
+
+  try {
+    let models: string[] = [];
+
+    if (config.format === "copilot") {
+      const res = await fetch(`${config.baseUrl}/models`, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Openai-Intent": "conversation-edits",
+          "User-Agent": "AlphaCode/1.0",
+          "Editor-Version": "AlphaCode/1.0",
+          "Copilot-Integration-Id": "vscode-chat"
+        }
+      });
+      if (!res.ok) throw new Error(`Copilot /models returned ${res.status}`);
+      const data = (await res.json()) as { data?: Array<{ id: string }> };
+      models = (data.data ?? []).map((m) => m.id);
+    } else if (config.format === "openai" && config.id === "openai") {
+      const res = await fetch(`${config.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` }
+      });
+      if (!res.ok) throw new Error(`OpenAI /models returned ${res.status}`);
+      const data = (await res.json()) as { data?: Array<{ id: string }> };
+      models = (data.data ?? [])
+        .map((m) => m.id)
+        .filter((id) => OPENAI_CHAT_PREFIXES.some((p) => id.startsWith(p)))
+        .filter((id) => !OPENAI_EXCLUDE_PATTERNS.some((p) => id.includes(p)))
+        .sort();
+    } else if (config.format === "anthropic") {
+      const res = await fetch(`${config.baseUrl}/models?limit=1000`, {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01"
+        }
+      });
+      if (!res.ok) throw new Error(`Anthropic /models returned ${res.status}`);
+      const data = (await res.json()) as { data?: Array<{ id: string; display_name?: string }> };
+      models = (data.data ?? []).map((m) => m.id);
+    } else if (config.id === "openrouter") {
+      const res = await fetch(`${config.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` }
+      });
+      if (!res.ok) throw new Error(`OpenRouter /models returned ${res.status}`);
+      const data = (await res.json()) as { data?: Array<{ id: string; name?: string }> };
+      // OpenRouter returns hundreds of models — take top popular ones
+      models = (data.data ?? [])
+        .map((m) => m.id)
+        .filter((id) => {
+          // Include major providers' models
+          const prefixes = ["openai/", "anthropic/", "google/", "deepseek/", "meta-llama/", "mistralai/", "cohere/"];
+          return prefixes.some((p) => id.startsWith(p));
+        })
+        .slice(0, 50); // Cap at 50 to keep the dropdown manageable
+    }
+
+    if (models.length > 0) {
+      modelCache.set(config.id, { models, fetchedAt: Date.now() });
+      console.log(`[models] Fetched ${models.length} models for ${config.label}`);
+      return models;
+    }
+  } catch (err) {
+    console.warn(`[models] Failed to fetch models for ${config.label}:`, err instanceof Error ? err.message : err);
+  }
+
+  // Fall back to static list
+  return config.fallbackModels;
+}
+
+/** Get models for a provider — returns cached dynamic list or fallback */
+async function getModelsForProvider(config: ProviderConfig): Promise<string[]> {
+  return fetchModelsForProvider(config);
+}
+
+/** Invalidate model cache for a provider (e.g., after auth change) */
+function invalidateModelCache(providerId?: string): void {
+  if (providerId) {
+    modelCache.delete(providerId);
+  } else {
+    modelCache.clear();
+  }
+}
+
 function resolveProvider(providerLabel: string): ProviderConfig | null {
   return providerConfigs.find((c) => c.label === providerLabel) ?? null;
 }
 
 function resolveModel(config: ProviderConfig, uiModel: string): string {
-  return config.modelMap[uiModel] ?? config.defaultModel;
+  // Model IDs are now passed directly from the UI — no translation needed
+  return uiModel || config.defaultModel;
 }
 
 const SYSTEM_PROMPT = `You are Alpha Code, an AI coding assistant running inside a local-first code editor. You help users with software engineering tasks: inspecting code, planning implementations, writing code, running commands, and reviewing changes.
@@ -1081,14 +1169,14 @@ async function buildWorkspaceSnapshot() {
     sessions,
     suggestions: promptSuggestions,
     recentRuns: getRecentRuns(),
-    providers: providerConfigs.map((config) => ({
+    providers: await Promise.all(providerConfigs.map(async (config) => ({
       id: config.id,
       label: config.label,
       status: getProviderStatus(config),
       model: config.defaultModel,
-      models: Object.keys(config.modelMap).filter((k) => k !== "Auto"),
+      models: await getModelsForProvider(config),
       method: getAuthMethod(config)
-    }))
+    })))
   });
 }
 
@@ -1610,6 +1698,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/api/auth/keys") {
       const payload = saveKeyInputSchema.parse(await readJsonBody(request));
       storedKeys.set(payload.provider, payload.key);
+      invalidateModelCache(payload.provider);
       console.log(`[auth] Stored API key for provider: ${payload.provider}`);
       void persistAuth();
       sendJson(response, 200, { ok: true, provider: payload.provider });
@@ -1620,6 +1709,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "DELETE" && request.url?.startsWith("/api/auth/keys/")) {
       const providerId = request.url.replace("/api/auth/keys/", "");
       storedKeys.delete(providerId);
+      invalidateModelCache(providerId);
       console.log(`[auth] Removed stored key for provider: ${providerId}`);
       void persistAuth();
       sendJson(response, 200, { ok: true, provider: providerId });
@@ -1687,17 +1777,25 @@ function startTerminalServer(): void {
 
   wss.on("connection", (ws: WebSocket) => {
     const shell = process.env.SHELL || "/bin/zsh";
-    const ptyProcess = nodePty.spawn(shell, [], {
-      name: "xterm-256color",
-      cols: 120,
-      rows: 30,
-      cwd: workspaceRoot,
-      env: {
-        ...process.env,
-        PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`,
-        TERM: "xterm-256color"
-      } as Record<string, string>
-    });
+    let ptyProcess: nodePty.IPty;
+    try {
+      ptyProcess = nodePty.spawn(shell, [], {
+        name: "xterm-256color",
+        cols: 120,
+        rows: 30,
+        cwd: workspaceRoot,
+        env: {
+          ...process.env,
+          PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`,
+          TERM: "xterm-256color"
+        } as Record<string, string>
+      });
+    } catch (err) {
+      console.error("[terminal] Failed to spawn PTY:", err instanceof Error ? err.message : err);
+      ws.send(JSON.stringify({ type: "error", data: `Failed to spawn terminal: ${err instanceof Error ? err.message : String(err)}` }));
+      ws.close();
+      return;
+    }
 
     activePtySessions.set(ws, ptyProcess);
     console.log(`[terminal] PTY spawned (pid: ${ptyProcess.pid}, shell: ${shell})`);
