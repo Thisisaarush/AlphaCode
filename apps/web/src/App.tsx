@@ -307,6 +307,9 @@ export default function App() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const streamingContentRef = useRef("");
 
+  // Tracks whether user explicitly cleared the session (prevents auto-select on next poll)
+  const userClearedSessionRef = useRef(false);
+
   // Overlay state
   const [showSettings, setShowSettings] = useState(false);
   const [showSearchPopup, setShowSearchPopup] = useState(false);
@@ -705,7 +708,7 @@ export default function App() {
       setOpenFileIds([payload.workspace.files[0].id]);
     }
 
-    if (!activeSessionId && payload.sessions[0]) {
+    if (!activeSessionId && payload.sessions[0] && !userClearedSessionRef.current) {
       setActiveSessionId(payload.sessions[0].id);
     }
 
@@ -1022,6 +1025,7 @@ export default function App() {
         });
         setActiveSessionId(payload.id);
         setSessionDetail(payload);
+        userClearedSessionRef.current = false;
         // Reset usage tracking for new session
         setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
         // Connect to SSE stream for real-time token delivery
@@ -1054,6 +1058,7 @@ export default function App() {
   }
 
   function handleNewSession() {
+    userClearedSessionRef.current = true;
     setActiveSessionId("");
     setSessionDetail(null);
     setPrompt("");
@@ -1236,7 +1241,7 @@ export default function App() {
                         <button
                           className="session-row-main"
                           type="button"
-                          onClick={() => setActiveSessionId(session.id)}
+                          onClick={() => { userClearedSessionRef.current = false; setActiveSessionId(session.id); }}
                         >
                           <span className={`session-status ${session.status}`} />
                           <span className="session-copy">
