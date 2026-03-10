@@ -25,8 +25,8 @@ import {
   Files,
   FolderGit2,
   GitBranch,
+  GitBranchPlus,
   Key,
-  LayoutPanelTop,
   LoaderCircle,
   LogIn,
   LogOut,
@@ -43,6 +43,7 @@ import {
   Terminal,
   TerminalSquare,
   Trash2,
+  Wrench,
   X,
   Zap
 } from "lucide-react";
@@ -54,6 +55,7 @@ interface AlphaCodeBridge {
   platform: "darwin" | "win32" | "linux";
   windowControl: (action: "minimize" | "maximize" | "close") => void;
   openExternal: (url: string) => void;
+  pickFolder?: () => Promise<string | null>;
 }
 declare global {
   interface Window {
@@ -307,6 +309,16 @@ export default function App() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const streamingContentRef = useRef("");
 
+  // Tool call tracking during streaming
+  const [activeToolCalls, setActiveToolCalls] = useState<Array<{
+    toolCallId: string;
+    toolName: string;
+    arguments?: string;
+    result?: string;
+    isError?: boolean;
+    status: "running" | "done" | "error";
+  }>>([]);
+
   // Tracks whether user explicitly cleared the session (prevents auto-select on next poll)
   const userClearedSessionRef = useRef(false);
 
@@ -314,6 +326,29 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSearchPopup, setShowSearchPopup] = useState(false);
   const searchPopupRef = useRef<HTMLInputElement>(null);
+
+  // Branch switcher state
+  const [showBranchSwitcher, setShowBranchSwitcher] = useState(false);
+  const [branchData, setBranchData] = useState<{
+    current: string;
+    local: string[];
+    remote: string[];
+    hasUncommittedChanges: boolean;
+  } | null>(null);
+  const [branchFilter, setBranchFilter] = useState("");
+  const [newBranchName, setNewBranchName] = useState("");
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [branchError, setBranchError] = useState("");
+  const branchFilterRef = useRef<HTMLInputElement>(null);
+
+  // Project switcher state
+  const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string; lastOpened: number }>>([]);
+  const [projectFilter, setProjectFilter] = useState("");
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [projectError, setProjectError] = useState("");
+  const [projectPathInput, setProjectPathInput] = useState("");
+  const projectFilterRef = useRef<HTMLInputElement>(null);
 
   // Model toggles — persisted to localStorage, keyed by raw model ID
   const [disabledModels, setDisabledModels] = useState<Record<string, boolean>>(() => {
@@ -392,6 +427,7 @@ export default function App() {
     streamingContentRef.current = "";
     setStreamingContent("");
     setStreamingMessageId(null);
+    setActiveToolCalls([]);
 
     const es = new EventSource(`${serverUrl}/api/sessions/${sessionId}/stream`);
     eventSourceRef.current = es;
@@ -399,11 +435,16 @@ export default function App() {
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as {
-          type: "connected" | "token" | "done" | "error";
+          type: "connected" | "token" | "done" | "error" | "tool_call" | "tool_result";
           messageId?: string;
           token?: string;
           error?: string;
           usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+          toolCallId?: string;
+          toolName?: string;
+          arguments?: string;
+          result?: string;
+          isError?: boolean;
         };
 
         if (data.type === "token" && data.token) {
@@ -412,6 +453,30 @@ export default function App() {
           }
           streamingContentRef.current += data.token;
           setStreamingContent(streamingContentRef.current);
+        } else if (data.type === "tool_call" && data.toolCallId) {
+          // A new tool call is starting — add it to the active list
+          setActiveToolCalls((prev) => [
+            ...prev,
+            {
+              toolCallId: data.toolCallId!,
+              toolName: data.toolName || "unknown",
+              arguments: data.arguments,
+              status: "running"
+            }
+          ]);
+          // Clear streaming content since the AI text portion for this round is done
+          // and we're now in tool execution phase
+          streamingContentRef.current = "";
+          setStreamingContent("");
+        } else if (data.type === "tool_result" && data.toolCallId) {
+          // A tool call completed — update its status and result
+          setActiveToolCalls((prev) =>
+            prev.map((tc) =>
+              tc.toolCallId === data.toolCallId
+                ? { ...tc, result: data.result, isError: data.isError, status: data.isError ? "error" : "done" }
+                : tc
+            )
+          );
         } else if (data.type === "done") {
           // Accumulate usage data if present
           if (data.usage) {
@@ -429,6 +494,7 @@ export default function App() {
           setStreamingContent("");
           setStreamingMessageId(null);
           streamingContentRef.current = "";
+          setActiveToolCalls([]);
           // Fetch the final session state
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
@@ -442,6 +508,7 @@ export default function App() {
           setStreamingContent("");
           setStreamingMessageId(null);
           streamingContentRef.current = "";
+          setActiveToolCalls([]);
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
             .catch(() => undefined);
@@ -472,6 +539,7 @@ export default function App() {
     setStreamingContent("");
     setStreamingMessageId(null);
     streamingContentRef.current = "";
+    setActiveToolCalls([]);
 
     // Tell server to abort the underlying fetch
     if (activeSessionId) {
@@ -675,7 +743,9 @@ export default function App() {
       }
       // Escape — close overlays / clear error
       if (e.key === "Escape") {
-        if (showSearchPopup) { setShowSearchPopup(false); setSearchQuery(""); }
+        if (showProjectSwitcher) { setShowProjectSwitcher(false); setProjectFilter(""); setProjectPathInput(""); }
+        else if (showBranchSwitcher) { setShowBranchSwitcher(false); setBranchFilter(""); setNewBranchName(""); }
+        else if (showSearchPopup) { setShowSearchPopup(false); setSearchQuery(""); }
         else if (showSettings) setShowSettings(false);
         else if (error) setError("");
       }
@@ -687,7 +757,7 @@ export default function App() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [error, showSearchPopup, showSettings]);
+  }, [error, showSearchPopup, showSettings, showBranchSwitcher, showProjectSwitcher]);
 
   async function loadWorkspace() {
     const payload = await fetchJson<WorkspaceSnapshot>(`${serverUrl}/api/workspace`);
@@ -1078,6 +1148,163 @@ export default function App() {
     }
   }
 
+  async function openBranchSwitcher() {
+    setShowBranchSwitcher(true);
+    setBranchFilter("");
+    setNewBranchName("");
+    setBranchError("");
+    setBranchLoading(true);
+    try {
+      const data = await fetchJson<{
+        current: string;
+        local: string[];
+        remote: string[];
+        hasUncommittedChanges: boolean;
+      }>(`${serverUrl}/api/git/branches`);
+      setBranchData(data);
+    } catch (err) {
+      setBranchError(err instanceof Error ? err.message : "Failed to load branches");
+    } finally {
+      setBranchLoading(false);
+      requestAnimationFrame(() => branchFilterRef.current?.focus());
+    }
+  }
+
+  async function handleCheckoutBranch(branch: string) {
+    if (branch === branchData?.current) return;
+    setBranchLoading(true);
+    setBranchError("");
+    try {
+      await fetchJson<{ branch: string }>(`${serverUrl}/api/git/checkout`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ branch }),
+      });
+      setShowBranchSwitcher(false);
+      await loadWorkspace();
+    } catch (err) {
+      setBranchError(err instanceof Error ? err.message : "Checkout failed");
+    } finally {
+      setBranchLoading(false);
+    }
+  }
+
+  async function handleCreateBranch() {
+    if (!newBranchName.trim()) return;
+    setBranchLoading(true);
+    setBranchError("");
+    try {
+      await fetchJson<{ branch: string; created: string }>(`${serverUrl}/api/git/branch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: newBranchName.trim(), checkout: true }),
+      });
+      setShowBranchSwitcher(false);
+      setNewBranchName("");
+      await loadWorkspace();
+    } catch (err) {
+      setBranchError(err instanceof Error ? err.message : "Branch creation failed");
+    } finally {
+      setBranchLoading(false);
+    }
+  }
+
+  /* ---- Project Switcher ---- */
+
+  async function openProjectSwitcher() {
+    setShowProjectSwitcher(true);
+    setProjectFilter("");
+    setProjectPathInput("");
+    setProjectError("");
+    setProjectLoading(true);
+    try {
+      const data = await fetchJson<{
+        projects: Array<{ path: string; name: string; lastOpened: number }>;
+      }>(`${serverUrl}/api/workspace/recent`);
+      setRecentProjects(data.projects);
+    } catch (err) {
+      setProjectError(err instanceof Error ? err.message : "Failed to load projects");
+    } finally {
+      setProjectLoading(false);
+      requestAnimationFrame(() => projectFilterRef.current?.focus());
+    }
+  }
+
+  async function handleSwitchProject(projectPath: string) {
+    if (projectPath === snapshot?.workspace?.root) return;
+    setProjectLoading(true);
+    setProjectError("");
+    try {
+      await fetchJson<{ root: string; name: string }>(`${serverUrl}/api/workspace/switch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: projectPath }),
+      });
+      setShowProjectSwitcher(false);
+
+      // --- Close any active SSE stream to the old session ---
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      streamingContentRef.current = "";
+
+      // Reset editor state for the new project
+      setActiveFileId("");
+      setOpenFileIds([]);
+      setDrafts({});
+      setExpandedGroups({});
+      setFsEntries([]);
+      setFsPath("");
+      setSearchQuery("");
+
+      // Clear session state — old sessions belong to the previous project
+      setActiveSessionId("");
+      setSessionDetail(null);
+      setStreamingContent("");
+      setStreamingMessageId(null);
+      setActiveToolCalls([]);
+
+      // Clear chat input & submission state
+      setPrompt("");
+      setSubmitting(false);
+      setError("");
+
+      // Clear terminal runs (will be repopulated by loadWorkspace)
+      setTerminalRuns([]);
+
+      // Reset usage tracking for the new project
+      setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+
+      // Close autocomplete if open
+      setAutocompleteType(null);
+      setAutocompleteQuery("");
+      setAutocompleteIndex(0);
+
+      userClearedSessionRef.current = true;
+      await loadWorkspace();
+    } catch (err) {
+      setProjectError(err instanceof Error ? err.message : "Switch failed");
+    } finally {
+      setProjectLoading(false);
+    }
+  }
+
+  async function handleOpenProjectPath() {
+    const p = projectPathInput.trim();
+    if (!p) return;
+    await handleSwitchProject(p);
+  }
+
+  async function handlePickFolder() {
+    if (electronBridge?.pickFolder) {
+      const picked = await electronBridge.pickFolder();
+      if (picked) {
+        await handleSwitchProject(picked);
+      }
+    }
+  }
+
   if (loading) {
     return (
       <main className="loading-shell">
@@ -1105,22 +1332,15 @@ export default function App() {
       {/* ===== Titlebar ===== */}
       <header className={`titlebar${isElectron ? " electron" : ""}${isMac ? " mac" : ""}`}>
         <div className="titlebar-side left">
-          <div className="brand-lockup">
-            <span className="logo-block" />
-            <span>{APP_NAME}</span>
-          </div>
-          <div className="titlebar-chip">
-            <LayoutPanelTop size={12} />
-            <span>Desktop</span>
-          </div>
-          <div className="titlebar-chip muted">
+          <span className="brand-lockup">{APP_NAME}</span>
+          <button className="titlebar-chip muted" type="button" title="Open project folder" onClick={openProjectSwitcher}>
             <FolderGit2 size={12} />
             <span>{snapshot?.workspace.name}</span>
-          </div>
-          <div className="titlebar-chip muted">
+          </button>
+          <button className="titlebar-chip muted" type="button" title="Switch branch" onClick={openBranchSwitcher}>
             <GitBranch size={12} />
             <span>{snapshot?.workspace?.branch ?? "main"}</span>
-          </div>
+          </button>
         </div>
 
         <div className="titlebar-center">
@@ -1147,10 +1367,6 @@ export default function App() {
             title="Toggle editor panel"
           >
             <PanelRight size={12} />
-          </button>
-          <button className="titlebar-action primary" type="button" onClick={handleNewSession}>
-            <Plus size={13} />
-            <span>New</span>
           </button>
 
           {/* Custom window controls for Windows/Linux Electron (frameless) */}
@@ -1311,73 +1527,162 @@ export default function App() {
                   <div className="message-timeline compact-scroll">
                     {sessionDetail ? (
                       <>
-                        {sessionDetail.messages.map((message) => (
-                          <article key={message.id} className={`message-turn ${message.role}`}>
-                            <div className="message-meta">
-                              <span>{message.role}</span>
-                              <span>{formatTime(message.createdAt)}</span>
-                              <div className="message-actions">
-                                <button
-                                  className="message-action-btn"
-                                  type="button"
-                                  title="Copy message"
-                                  onClick={() => {
-                                    void navigator.clipboard.writeText(message.content);
-                                  }}
-                                >
-                                  <Copy size={12} />
-                                </button>
-                                <button
-                                  className="message-action-btn"
-                                  type="button"
-                                  title="Delete message"
-                                  onClick={async () => {
-                                    try {
-                                      await fetch(`${serverUrl}/api/messages/${message.id}`, { method: "DELETE" });
-                                      if (activeSessionId) {
-                                        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
-                                        setSessionDetail(payload);
+                        {sessionDetail.messages.map((message, msgIdx) => {
+                          // Skip tool-result messages — they are rendered inline within their parent assistant message
+                          if (message.role === "tool") return null;
+
+                          // For assistant messages with toolCalls, find the matching tool result messages
+                          const toolResults: Record<string, { result: string; isError?: boolean }> = {};
+                          if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+                            // Look ahead in messages for tool results
+                            for (let i = msgIdx + 1; i < sessionDetail.messages.length; i++) {
+                              const m = sessionDetail.messages[i];
+                              if (m.role === "tool" && m.toolCallId) {
+                                toolResults[m.toolCallId] = { result: m.content, isError: m.isError };
+                              } else if (m.role !== "tool") {
+                                break; // Stop once we hit a non-tool message
+                              }
+                            }
+                          }
+
+                          return (
+                            <article key={message.id} className={`message-turn ${message.role}`}>
+                              <div className="message-meta">
+                                <span>{message.role}</span>
+                                <span>{formatTime(message.createdAt)}</span>
+                                <div className="message-actions">
+                                  <button
+                                    className="message-action-btn"
+                                    type="button"
+                                    title="Copy message"
+                                    onClick={() => {
+                                      void navigator.clipboard.writeText(message.content);
+                                    }}
+                                  >
+                                    <Copy size={12} />
+                                  </button>
+                                  <button
+                                    className="message-action-btn"
+                                    type="button"
+                                    title="Delete message"
+                                    onClick={async () => {
+                                      try {
+                                        await fetch(`${serverUrl}/api/messages/${message.id}`, { method: "DELETE" });
+                                        if (activeSessionId) {
+                                          const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+                                          setSessionDetail(payload);
+                                        }
+                                      } catch {
+                                        // Ignore
                                       }
-                                    } catch {
-                                      // Ignore
-                                    }
-                                  }}
-                                >
-                                  <Trash2 size={12} />
-                                </button>
+                                    }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                            <div className="message-content">
-                              {message.role === "assistant" ? (
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  rehypePlugins={[rehypeHighlight]}
-                                  components={{
-                                    pre({ children, ...props }) {
-                                      return (
-                                        <div className="md-code-block">
-                                          <button
-                                            className="md-code-copy"
-                                            onClick={(e) => {
-                                              const code = (e.currentTarget.parentElement?.querySelector("code") as HTMLElement | null)?.innerText ?? "";
-                                              navigator.clipboard.writeText(code);
-                                              const btn = e.currentTarget;
-                                              btn.textContent = "Copied!";
-                                              setTimeout(() => { btn.textContent = "Copy"; }, 1500);
-                                            }}
-                                          >Copy</button>
-                                          <pre {...props}>{children}</pre>
-                                        </div>
-                                      );
-                                    },
-                                  }}
-                                >{message.content}</ReactMarkdown>
-                              ) : (
-                                <pre>{message.content}</pre>
+                              {/* Message text content */}
+                              {message.content && (
+                                <div className="message-content">
+                                  {message.role === "assistant" ? (
+                                    <ReactMarkdown
+                                      remarkPlugins={[remarkGfm]}
+                                      rehypePlugins={[rehypeHighlight]}
+                                      components={{
+                                        pre({ children, ...props }) {
+                                          return (
+                                            <div className="md-code-block">
+                                              <button
+                                                className="md-code-copy"
+                                                onClick={(e) => {
+                                                  const code = (e.currentTarget.parentElement?.querySelector("code") as HTMLElement | null)?.innerText ?? "";
+                                                  navigator.clipboard.writeText(code);
+                                                  const btn = e.currentTarget;
+                                                  btn.textContent = "Copied!";
+                                                  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+                                                }}
+                                              >Copy</button>
+                                              <pre {...props}>{children}</pre>
+                                            </div>
+                                          );
+                                        },
+                                      }}
+                                    >{message.content}</ReactMarkdown>
+                                  ) : (
+                                    <pre>{message.content}</pre>
+                                  )}
+                                </div>
                               )}
-                            </div>
-                          </article>
-                        ))}
+                              {/* Tool call blocks — shown on assistant messages that invoked tools */}
+                              {message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0 && (
+                                <div className="tool-calls-container">
+                                  {message.toolCalls.map((tc) => {
+                                    const tr = toolResults[tc.id];
+                                    let parsedArgs: Record<string, unknown> = {};
+                                    try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+                                    const toolLabel = tc.name === "run_command" ? `$ ${(parsedArgs.command as string) || tc.name}`
+                                      : tc.name === "read_file" ? `Read ${(parsedArgs.filePath as string) || ""}`
+                                      : tc.name === "write_file" ? `Write ${(parsedArgs.filePath as string) || ""}`
+                                      : tc.name === "list_files" ? `List ${(parsedArgs.dirPath as string) || "."}`
+                                      : tc.name;
+                                    return (
+                                      <details key={tc.id} className={`tool-call-block ${tr?.isError ? "error" : "done"}`}>
+                                        <summary className="tool-call-header">
+                                          <Wrench size={13} />
+                                          <span className="tool-call-name">{toolLabel}</span>
+                                          {tr?.isError ? (
+                                            <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
+                                          ) : (
+                                            <span className="tool-call-status done"><Check size={11} /> done</span>
+                                          )}
+                                        </summary>
+                                        {tr && (
+                                          <pre className="tool-call-output">{tr.result}</pre>
+                                        )}
+                                      </details>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </article>
+                          );
+                        })}
+
+                        {/* Active tool calls — shown during streaming when tools are executing */}
+                        {activeToolCalls.length > 0 && (
+                          <div className="tool-calls-container streaming">
+                            {activeToolCalls.map((tc) => {
+                              let parsedArgs: Record<string, unknown> = {};
+                              try { parsedArgs = JSON.parse(tc.arguments || "{}") as Record<string, unknown>; } catch { /* ignore */ }
+                              const toolLabel = tc.toolName === "run_command" ? `$ ${(parsedArgs.command as string) || tc.toolName}`
+                                : tc.toolName === "read_file" ? `Read ${(parsedArgs.filePath as string) || ""}`
+                                : tc.toolName === "write_file" ? `Write ${(parsedArgs.filePath as string) || ""}`
+                                : tc.toolName === "list_files" ? `List ${(parsedArgs.dirPath as string) || "."}`
+                                : tc.toolName;
+                              return (
+                                <details key={tc.toolCallId} className={`tool-call-block ${tc.status}`} open={tc.status === "running"}>
+                                  <summary className="tool-call-header">
+                                    {tc.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
+                                    <span className="tool-call-name">{toolLabel}</span>
+                                    {tc.status === "running" && (
+                                      <span className="tool-call-status running">running</span>
+                                    )}
+                                    {tc.status === "done" && (
+                                      <span className="tool-call-status done"><Check size={11} /> done</span>
+                                    )}
+                                    {tc.status === "error" && (
+                                      <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
+                                    )}
+                                  </summary>
+                                  {tc.result && (
+                                    <pre className="tool-call-output">{tc.result}</pre>
+                                  )}
+                                </details>
+                              );
+                            })}
+                          </div>
+                        )}
+
                         {/* Streaming assistant message — shown while tokens arrive */}
                         {streamingContent && (
                           <article className="message-turn assistant streaming">
@@ -2284,6 +2589,251 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===== Project switcher popup ===== */}
+      {showProjectSwitcher ? (
+        <div className="overlay-backdrop" onClick={() => { setShowProjectSwitcher(false); setProjectFilter(""); setProjectPathInput(""); }}>
+          <div className="branch-popup project-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="branch-popup-header">
+              <FolderGit2 size={14} />
+              <span>Switch Project</span>
+              <button className="branch-popup-close" type="button" onClick={() => setShowProjectSwitcher(false)}>
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="branch-popup-search">
+              <Search size={13} />
+              <input
+                ref={projectFilterRef}
+                type="text"
+                value={projectFilter}
+                onChange={(e) => setProjectFilter(e.target.value)}
+                placeholder="Filter projects..."
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { setShowProjectSwitcher(false); setProjectFilter(""); }
+                }}
+              />
+            </div>
+
+            {projectError ? (
+              <div className="branch-popup-error">
+                <CircleAlert size={12} />
+                <span>{projectError}</span>
+              </div>
+            ) : null}
+
+            {projectLoading && recentProjects.length === 0 ? (
+              <div className="branch-popup-loading">
+                <LoaderCircle className="spin" size={16} />
+                <span>Loading projects...</span>
+              </div>
+            ) : (
+              <div className="branch-popup-list compact-scroll">
+                {/* Current project */}
+                {recentProjects
+                  .filter((p) => p.path === snapshot?.workspace?.root)
+                  .filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase()))
+                  .map((p) => (
+                    <div key={p.path} className="branch-row current">
+                      <FolderGit2 size={13} />
+                      <span className="branch-name">{p.name}</span>
+                      <span className="branch-badge">current</span>
+                    </div>
+                  ))}
+
+                {/* Other recent projects */}
+                {recentProjects
+                  .filter((p) => p.path !== snapshot?.workspace?.root)
+                  .filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase()))
+                  .map((p) => (
+                    <button
+                      key={p.path}
+                      className="branch-row"
+                      type="button"
+                      disabled={projectLoading}
+                      onClick={() => handleSwitchProject(p.path)}
+                      title={p.path}
+                    >
+                      <FolderGit2 size={13} />
+                      <span className="branch-name">{p.name}</span>
+                      <span className="branch-tag">{p.path.replace(/^\/Users\/[^/]+/, "~")}</span>
+                    </button>
+                  ))}
+
+                {/* No results */}
+                {recentProjects.filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase())).length === 0 ? (
+                  <div className="branch-popup-empty">No matching projects</div>
+                ) : null}
+              </div>
+            )}
+
+            {/* Open project by path or native picker */}
+            <div className="branch-popup-create">
+              <div className="branch-create-row">
+                <FolderGit2 size={13} />
+                <input
+                  type="text"
+                  value={projectPathInput}
+                  onChange={(e) => setProjectPathInput(e.target.value)}
+                  placeholder="Paste a folder path..."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleOpenProjectPath();
+                    if (e.key === "Escape") { setShowProjectSwitcher(false); setProjectPathInput(""); }
+                  }}
+                />
+                <button
+                  className="branch-create-btn"
+                  type="button"
+                  disabled={!projectPathInput.trim() || projectLoading}
+                  onClick={handleOpenProjectPath}
+                >
+                  {projectLoading ? <LoaderCircle className="spin" size={12} /> : "Open"}
+                </button>
+              </div>
+              {isElectron ? (
+                <button
+                  className="project-browse-btn"
+                  type="button"
+                  disabled={projectLoading}
+                  onClick={handlePickFolder}
+                >
+                  <Files size={12} />
+                  <span>Browse...</span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===== Branch switcher popup ===== */}
+      {showBranchSwitcher ? (
+        <div className="overlay-backdrop" onClick={() => { setShowBranchSwitcher(false); setBranchFilter(""); setNewBranchName(""); }}>
+          <div className="branch-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="branch-popup-header">
+              <GitBranch size={14} />
+              <span>Switch Branch</span>
+              <button className="branch-popup-close" type="button" onClick={() => setShowBranchSwitcher(false)}>
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="branch-popup-search">
+              <Search size={13} />
+              <input
+                ref={branchFilterRef}
+                type="text"
+                value={branchFilter}
+                onChange={(e) => setBranchFilter(e.target.value)}
+                placeholder="Filter branches..."
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { setShowBranchSwitcher(false); setBranchFilter(""); }
+                }}
+              />
+            </div>
+
+            {branchError ? (
+              <div className="branch-popup-error">
+                <CircleAlert size={12} />
+                <span>{branchError}</span>
+              </div>
+            ) : null}
+
+            {branchLoading && !branchData ? (
+              <div className="branch-popup-loading">
+                <LoaderCircle className="spin" size={16} />
+                <span>Loading branches...</span>
+              </div>
+            ) : branchData ? (
+              <div className="branch-popup-list compact-scroll">
+                {/* Current branch */}
+                {branchData.current && (!branchFilter || branchData.current.toLowerCase().includes(branchFilter.toLowerCase())) ? (
+                  <div className="branch-row current">
+                    <GitBranch size={13} />
+                    <span className="branch-name">{branchData.current}</span>
+                    <span className="branch-badge">current</span>
+                  </div>
+                ) : null}
+
+                {/* Local branches */}
+                {branchData.local
+                  .filter((b) => b !== branchData.current && (!branchFilter || b.toLowerCase().includes(branchFilter.toLowerCase())))
+                  .map((b) => (
+                    <button
+                      key={b}
+                      className="branch-row"
+                      type="button"
+                      disabled={branchLoading}
+                      onClick={() => handleCheckoutBranch(b)}
+                    >
+                      <GitBranch size={13} />
+                      <span className="branch-name">{b}</span>
+                      <span className="branch-tag">local</span>
+                    </button>
+                  ))}
+
+                {/* Remote-only branches */}
+                {branchData.remote
+                  .filter((b) => !branchFilter || b.toLowerCase().includes(branchFilter.toLowerCase()))
+                  .map((b) => (
+                    <button
+                      key={`remote-${b}`}
+                      className="branch-row"
+                      type="button"
+                      disabled={branchLoading}
+                      onClick={() => handleCheckoutBranch(b)}
+                    >
+                      <GitBranch size={13} />
+                      <span className="branch-name">{b}</span>
+                      <span className="branch-tag remote">remote</span>
+                    </button>
+                  ))}
+
+                {/* No results */}
+                {(() => {
+                  const q = branchFilter.toLowerCase();
+                  const anyMatch = branchData.current.toLowerCase().includes(q)
+                    || branchData.local.some((b) => b.toLowerCase().includes(q))
+                    || branchData.remote.some((b) => b.toLowerCase().includes(q));
+                  return !anyMatch ? <div className="branch-popup-empty">No matching branches</div> : null;
+                })()}
+              </div>
+            ) : null}
+
+            {/* Create new branch */}
+            <div className="branch-popup-create">
+              <div className="branch-create-row">
+                <GitBranchPlus size={13} />
+                <input
+                  type="text"
+                  value={newBranchName}
+                  onChange={(e) => setNewBranchName(e.target.value)}
+                  placeholder="New branch name..."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateBranch();
+                    if (e.key === "Escape") { setShowBranchSwitcher(false); setNewBranchName(""); }
+                  }}
+                />
+                <button
+                  className="branch-create-btn"
+                  type="button"
+                  disabled={!newBranchName.trim() || branchLoading}
+                  onClick={handleCreateBranch}
+                >
+                  {branchLoading ? <LoaderCircle className="spin" size={12} /> : "Create"}
+                </button>
+              </div>
+              {branchData?.hasUncommittedChanges ? (
+                <div className="branch-popup-warning">
+                  <CircleAlert size={11} />
+                  <span>You have uncommitted changes</span>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

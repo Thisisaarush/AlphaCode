@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
@@ -175,6 +175,18 @@ async function createWindow() {
     if (typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"))) {
       shell.openExternal(url);
     }
+  });
+
+  // IPC: native folder picker for workspace switching
+  ipcMain.handle("pick-folder", async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: "Open Project Folder",
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
   });
 
   if (isDevelopment) {

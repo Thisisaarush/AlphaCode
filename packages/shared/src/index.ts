@@ -5,6 +5,24 @@ export const APP_NAME = "Alpha Code";
 const sessionStatusSchema = z.enum(["idle", "running", "review"]);
 const commandRunStatusSchema = z.enum(["running", "completed", "failed", "killed"]);
 
+/* ================================================================
+   Tool Call Types
+   ================================================================ */
+
+export const toolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  arguments: z.string(),           // JSON-encoded arguments string from the AI
+  parsedArgs: z.record(z.string(), z.unknown()).optional()  // parsed version for convenience
+});
+
+export const toolResultSchema = z.object({
+  toolCallId: z.string(),
+  name: z.string(),
+  result: z.string(),              // string output of the tool execution
+  isError: z.boolean().optional()
+});
+
 export const providerIdSchema = z.enum([
   "copilot",
   "openrouter",
@@ -49,9 +67,15 @@ export const sessionSummarySchema = z.object({
 
 export const sessionMessageSchema = z.object({
   id: z.string(),
-  role: z.enum(["user", "assistant", "system"]),
+  role: z.enum(["user", "assistant", "system", "tool"]),
   content: z.string(),
-  createdAt: z.string()
+  createdAt: z.string(),
+  // Present on assistant messages that invoke tools
+  toolCalls: z.array(toolCallSchema).optional(),
+  // Present on tool-result messages (role === "tool")
+  toolCallId: z.string().optional(),
+  toolName: z.string().optional(),
+  isError: z.boolean().optional()
 });
 
 export const commandRunSchema = z.object({
@@ -126,6 +150,8 @@ export type Workspace = z.infer<typeof workspaceSchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 export type SessionMessage = z.infer<typeof sessionMessageSchema>;
 export type CommandRun = z.infer<typeof commandRunSchema>;
+export type ToolCall = z.infer<typeof toolCallSchema>;
+export type ToolResult = z.infer<typeof toolResultSchema>;
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 export type PromptSuggestion = z.infer<typeof promptSuggestionSchema>;
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>;

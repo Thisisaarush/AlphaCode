@@ -7,5 +7,8 @@ contextBridge.exposeInMainWorld("alphaCode", {
   },
   openExternal: (url) => {
     ipcRenderer.send("open-external", url);
+  },
+  pickFolder: () => {
+    return ipcRenderer.invoke("pick-folder");
   }
 });
