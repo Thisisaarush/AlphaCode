@@ -362,10 +362,13 @@ const providerConfigs: ProviderConfig[] = [
     label: "Copilot",
     envKey: "GITHUB_TOKEN",
     baseUrl: "https://api.githubcopilot.com",
-    defaultModel: "claude-sonnet-4",
+    defaultModel: "claude-sonnet-4.6",
     fallbackModels: [
-      "claude-sonnet-4", "claude-sonnet-4.5", "claude-opus-4.5",
-      "gpt-4.1", "gpt-4o", "gpt-5", "gpt-5-mini", "gemini-2.5-pro"
+      "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-opus-4.6", "claude-opus-4.5", "claude-haiku-4.5",
+      "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5", "gpt-5-mini",
+      "gpt-4.1", "gpt-4o", "o4-mini", "o3-mini",
+      "gemini-3-flash", "gemini-3.1-pro-preview", "gemini-2.5-pro",
+      "grok-code-fast-1"
     ],
     format: "copilot"
   },
@@ -441,12 +444,12 @@ const OPENAI_EXCLUDE_PATTERNS = ["realtime", "audio", "search", "transcribe"];
 /** Copilot chat-compatible model prefixes — only models matching these are shown */
 const COPILOT_CHAT_PREFIXES = [
   "gpt-", "claude-", "o1", "o3", "o4",
-  "gemini-", "chatgpt-",
+  "gemini-", "chatgpt-", "grok-",
 ];
 const COPILOT_EXCLUDE_PATTERNS = [
-  "codex", "embed", "whisper", "tts", "dall-e", "davinci", "babbage",
+  "embed", "whisper", "tts", "dall-e", "davinci", "babbage",
   "moderation", "text-embedding", "code-search", "text-search",
-  "text-similarity", "curie", "ada", "realtime", "audio", "search", "transcribe"
+  "text-similarity", "curie", "ada", "realtime", "audio", "transcribe"
 ];
 
 /** Check if a Copilot model is chat-compatible */
@@ -454,6 +457,25 @@ function isCopilotChatModel(id: string): boolean {
   const lower = id.toLowerCase();
   if (COPILOT_EXCLUDE_PATTERNS.some((p) => lower.includes(p))) return false;
   return COPILOT_CHAT_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+/** GPT-5+ models (except gpt-5-mini) need the Responses API (/responses) instead of /chat/completions */
+function shouldUseCopilotResponsesApi(model: string): boolean {
+  const lower = model.toLowerCase();
+  // gpt-5, gpt-5.2-codex, gpt-5.3-codex, gpt-5.4, etc. → Responses API
+  // gpt-5-mini → Chat Completions API (not Responses)
+  if (lower.startsWith("gpt-5") && !lower.startsWith("gpt-5-mini")) return true;
+  return false;
+}
+
+/** Check if a model is a reasoning model (no temperature, uses developer role) */
+function isCopilotReasoningModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  // o1, o3, o4 series are reasoning models
+  if (lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("o4")) return true;
+  // gpt-5 main models are reasoning (but gpt-5-mini and gpt-5-chat are not)
+  if (lower.startsWith("gpt-5") && !lower.startsWith("gpt-5-mini") && !lower.startsWith("gpt-5-chat")) return true;
+  return false;
 }
 
 /** Strip date suffixes from model IDs for deduplication.
@@ -506,8 +528,7 @@ async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]>
           Authorization: `Bearer ${apiKey}`,
           "Openai-Intent": "conversation-edits",
           "User-Agent": "AlphaCode/1.0",
-          "Editor-Version": "AlphaCode/1.0",
-          "Copilot-Integration-Id": "vscode-chat"
+          "x-initiator": "user"
         }
       });
       if (!res.ok) throw new Error(`Copilot /models returned ${res.status}`);
@@ -672,7 +693,7 @@ async function callOpenAICompatible(
   const body = JSON.stringify({
     model,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    max_tokens: 4096,
+    max_tokens: 16384,
     temperature: 0.3
   });
 
@@ -715,7 +736,7 @@ async function callCopilot(
   const body = JSON.stringify({
     model,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    max_tokens: 4096,
+    max_tokens: 16384,
     temperature: 0.3
   });
 
@@ -760,7 +781,7 @@ async function callAnthropic(
 
   const body = JSON.stringify({
     model,
-    max_tokens: 4096,
+    max_tokens: 16384,
     system: systemMessage?.content ?? SYSTEM_PROMPT,
     messages: chatMessages
   });
@@ -876,7 +897,7 @@ async function callOpenAICompatibleStream(
   const body = JSON.stringify({
     model,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    max_tokens: 4096,
+    max_tokens: 16384,
     temperature: 0.3,
     stream: true
   });
@@ -912,48 +933,122 @@ async function callCopilotStream(
   onToken: TokenCallback,
   signal?: AbortSignal
 ): Promise<string> {
-  const url = `${config.baseUrl}/chat/completions`;
+  const useResponsesApi = shouldUseCopilotResponsesApi(model);
+  const isReasoning = isCopilotReasoningModel(model);
 
-  const headers: Record<string, string> = {
+  const copilotHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
     "Openai-Intent": "conversation-edits",
     "User-Agent": "AlphaCode/1.0",
-    "Editor-Version": "AlphaCode/1.0"
+    "x-initiator": "user"
   };
 
-  const body = JSON.stringify({
-    model,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    max_tokens: 4096,
-    temperature: 0.3,
-    stream: true
-  });
+  if (useResponsesApi) {
+    // --- Responses API for GPT-5+ models ---
+    const url = `${config.baseUrl}/responses`;
 
-  console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
-  const response = await fetch(url, { method: "POST", headers, body, signal });
-
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
-    if (response.status === 400 && errorBody.includes("unsupported_api_for_model")) {
-      throw new Error(`Model "${model}" is not compatible with the chat/completions API. Please select a different model.`);
+    // Convert messages to Responses API input format
+    const input: Array<Record<string, unknown>> = [];
+    for (const m of messages) {
+      if (m.role === "system") {
+        // Reasoning models use "developer" role, others use "system"
+        input.push({ role: isReasoning ? "developer" : "system", content: m.content });
+      } else if (m.role === "user") {
+        input.push({ role: "user", content: [{ type: "input_text", text: m.content }] });
+      } else if (m.role === "assistant") {
+        input.push({ role: "assistant", content: [{ type: "output_text", text: m.content }] });
+      }
     }
-    throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
-  }
 
-  if (!response.body) {
-    throw new Error("No response body for streaming");
-  }
+    const bodyObj: Record<string, unknown> = {
+      model,
+      input,
+      stream: true,
+      max_output_tokens: 16384,
+    };
 
-  return parseSSEStream(
-    response.body,
-    (parsed) => {
-      const choices = parsed.choices as Array<{ delta?: { content?: string } }> | undefined;
-      return choices?.[0]?.delta?.content ?? null;
-    },
-    onToken,
-    signal
-  );
+    // Reasoning models: no temperature, add reasoning config
+    if (isReasoning) {
+      bodyObj.reasoning = { effort: "medium", summary: "auto" };
+    } else {
+      bodyObj.temperature = 0.3;
+    }
+
+    const body = JSON.stringify(bodyObj);
+
+    console.log(`[ai-stream] Calling ${config.label} (${model}) via Responses API at ${url}`);
+    const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
+    }
+
+    if (!response.body) {
+      throw new Error("No response body for streaming");
+    }
+
+    // Parse Responses API SSE stream — extract text deltas
+    return parseSSEStream(
+      response.body,
+      (parsed) => {
+        const type = parsed.type as string | undefined;
+        if (type === "response.output_text.delta") {
+          return (parsed.delta as string) ?? null;
+        }
+        if (type === "error") {
+          const errMsg = (parsed.message as string) ?? "Unknown error";
+          throw new Error(`Copilot Responses API error: ${errMsg}`);
+        }
+        return null;
+      },
+      onToken,
+      signal
+    );
+  } else {
+    // --- Chat Completions API for non-GPT-5 models ---
+    const url = `${config.baseUrl}/chat/completions`;
+
+    const bodyObj: Record<string, unknown> = {
+      model,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      max_tokens: 16384,
+      stream: true,
+    };
+
+    // Reasoning models (o1, o3, o4): no temperature
+    if (!isReasoning) {
+      bodyObj.temperature = 0.3;
+    }
+
+    const body = JSON.stringify(bodyObj);
+
+    console.log(`[ai-stream] Calling ${config.label} (${model}) via Chat Completions at ${url}`);
+    const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      if (response.status === 400 && errorBody.includes("unsupported_api_for_model")) {
+        throw new Error(`Model "${model}" is not compatible with the chat/completions API. It may require the Responses API.`);
+      }
+      throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
+    }
+
+    if (!response.body) {
+      throw new Error("No response body for streaming");
+    }
+
+    return parseSSEStream(
+      response.body,
+      (parsed) => {
+        const choices = parsed.choices as Array<{ delta?: { content?: string } }> | undefined;
+        return choices?.[0]?.delta?.content ?? null;
+      },
+      onToken,
+      signal
+    );
+  }
 }
 
 async function callAnthropicStream(
@@ -977,7 +1072,7 @@ async function callAnthropicStream(
 
   const body = JSON.stringify({
     model,
-    max_tokens: 4096,
+    max_tokens: 16384,
     system: systemMessage?.content ?? SYSTEM_PROMPT,
     messages: chatMessages,
     stream: true

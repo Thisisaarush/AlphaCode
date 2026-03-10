@@ -102,10 +102,12 @@ function prettifyModelId(raw: string): string {
     "gpt-4.1-nano": "GPT 4.1 Nano",
     "gpt-4.5-preview": "GPT 4.5 Preview",
     "gpt-5": "GPT 5",
-    "gpt-5.3": "GPT 5.3",
-    "gpt-5.4": "GPT 5.4",
     "gpt-5-mini": "GPT 5 Mini",
     "gpt-5-turbo": "GPT 5 Turbo",
+    "gpt-5.2-codex": "GPT 5.2 Codex",
+    "gpt-5.3": "GPT 5.3",
+    "gpt-5.3-codex": "GPT 5.3 Codex",
+    "gpt-5.4": "GPT 5.4",
     "o1": "O1",
     "o1-mini": "O1 Mini",
     "o1-preview": "O1 Preview",
@@ -113,6 +115,17 @@ function prettifyModelId(raw: string): string {
     "o3-mini": "O3 Mini",
     "o4-mini": "O4 Mini",
     "chatgpt-4o-latest": "ChatGPT 4o Latest",
+    "claude-haiku-4.5": "Claude Haiku 4.5",
+    "claude-opus-4.5": "Claude Opus 4.5",
+    "claude-opus-4.6": "Claude Opus 4.6",
+    "claude-sonnet-4": "Claude Sonnet 4",
+    "claude-sonnet-4.5": "Claude Sonnet 4.5",
+    "claude-sonnet-4.6": "Claude Sonnet 4.6",
+    "gemini-3-flash": "Gemini 3 Flash",
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "gemini-2.5-pro": "Gemini 2.5 Pro",
+    "gemini-2.5-flash": "Gemini 2.5 Flash",
+    "grok-code-fast-1": "Grok Code Fast 1",
   };
 
   // Strip date suffixes like -20250514, -2025-04-14
@@ -141,6 +154,16 @@ function prettifyModelId(raw: string): string {
   if (stripped.startsWith("gemini-")) {
     return stripped
       .replace("gemini-", "Gemini ")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Grok models
+  if (stripped.startsWith("grok-")) {
+    return stripped
+      .replace("grok-", "Grok ")
       .replace(/-/g, " ")
       .replace(/\b\w/g, (c) => c.toUpperCase())
       .replace(/\s+/g, " ")
