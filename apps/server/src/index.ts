@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
@@ -22,7 +22,8 @@ import {
   type ProviderId,
   type SessionDetail,
   type SessionSummary,
-  type ToolCall
+  type ToolCall,
+  type FileChange
 } from "@alpha-code/shared";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -996,7 +997,7 @@ const AI_TOOLS_RESPONSES = AI_TOOLS_OPENAI.map((t) => ({
 }));
 
 /** Execute a tool call and return the result string */
-async function executeTool(name: string, argsJson: string): Promise<{ result: string; isError: boolean }> {
+async function executeTool(name: string, argsJson: string, toolCallId?: string): Promise<{ result: string; isError: boolean; fileChange?: FileChange }> {
   let args: Record<string, unknown>;
   try {
     args = JSON.parse(argsJson);
@@ -1067,10 +1068,36 @@ async function executeTool(name: string, argsJson: string): Promise<{ result: st
       if (!absPath.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
       console.log(`[tool] write_file: ${filePath}`);
       try {
+        // Read existing file content for checkpoint/diff tracking
+        let previousContent = "";
+        let isNewFile = true;
+        try {
+          previousContent = await readFile(absPath, "utf8");
+          isNewFile = false;
+        } catch {
+          // File doesn't exist yet — new file
+        }
+
+        // Compute line diffs
+        const oldLines = isNewFile ? [] : previousContent.split("\n");
+        const newLines = content.split("\n");
+        const linesDeleted = isNewFile ? 0 : oldLines.length;
+        const linesAdded = newLines.length;
+
         // Ensure parent directory exists
         await mkdir(path.dirname(absPath), { recursive: true });
         await writeFile(absPath, content, "utf8");
-        return { result: `File written: ${filePath} (${content.length} chars)`, isError: false };
+
+        const fileChange: FileChange = {
+          toolCallId: toolCallId || "",
+          filePath,
+          linesAdded,
+          linesDeleted,
+          previousContent,
+          isNewFile
+        };
+
+        return { result: `File written: ${filePath} (${content.length} chars, +${linesAdded} -${linesDeleted} lines)`, isError: false, fileChange };
       } catch (err) {
         return { result: `Error writing file: ${(err as Error).message}`, isError: true };
       }
@@ -1302,6 +1329,7 @@ interface StreamResult {
   content: string;
   usage?: UsageData;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+  fileChanges?: FileChange[];
 }
 
 /** Parse SSE lines from a readable stream, calling onToken for each content delta.
@@ -1852,6 +1880,7 @@ type ToolEventCallback = (event: {
   arguments?: string;
   result?: string;
   isError?: boolean;
+  fileChange?: FileChange;
 }) => void;
 
 /** Streaming version of callAI — invokes onToken for each chunk, supports tool execution loop.
@@ -1899,6 +1928,7 @@ async function callAIStream(
   let allContent = "";
   let lastUsage: UsageData | undefined;
   const allToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
+  const allFileChanges: FileChange[] = [];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     try {
@@ -1925,7 +1955,7 @@ async function callAIStream(
 
       // If no tool calls, we're done
       if (!result.toolCalls || result.toolCalls.length === 0) {
-        return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined };
+        return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined, fileChanges: allFileChanges.length > 0 ? allFileChanges : undefined };
       }
 
       // Process tool calls
@@ -1952,11 +1982,16 @@ async function callAIStream(
           onToolEvent({ type: "tool_call", toolCallId: tc.id, toolName: tc.name, arguments: tc.arguments });
         }
 
-        const toolResult = await executeTool(tc.name, tc.arguments);
+        const toolResult = await executeTool(tc.name, tc.arguments, tc.id);
+
+        // Track file changes for checkpoint support
+        if (toolResult.fileChange) {
+          allFileChanges.push(toolResult.fileChange);
+        }
 
         // Notify client of the tool result
         if (onToolEvent) {
-          onToolEvent({ type: "tool_result", toolCallId: tc.id, toolName: tc.name, result: toolResult.result, isError: toolResult.isError });
+          onToolEvent({ type: "tool_result", toolCallId: tc.id, toolName: tc.name, result: toolResult.result, isError: toolResult.isError, fileChange: toolResult.fileChange });
         }
 
         // Add tool result to conversation for the next AI round
@@ -1983,7 +2018,7 @@ async function callAIStream(
 
   // If we hit max rounds, return what we have
   console.warn(`[ai-stream] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
-  return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined };
+  return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined, fileChanges: allFileChanges.length > 0 ? allFileChanges : undefined };
 }
 
 /* ================================================================
@@ -2072,6 +2107,7 @@ function attachMessage(
     toolCallId?: string;
     toolName?: string;
     isError?: boolean;
+    fileChanges?: FileChange[];
   }
 ) {
   session.messages.push({
@@ -2082,7 +2118,8 @@ function attachMessage(
     ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
     ...(extra?.toolCallId ? { toolCallId: extra.toolCallId } : {}),
     ...(extra?.toolName ? { toolName: extra.toolName } : {}),
-    ...(extra?.isError !== undefined ? { isError: extra.isError } : {})
+    ...(extra?.isError !== undefined ? { isError: extra.isError } : {}),
+    ...(extra?.fileChanges ? { fileChanges: extra.fileChanges } : {})
   });
   session.updatedAt = new Date().toISOString();
 }
@@ -2525,7 +2562,10 @@ const server = createServer(async (request, response) => {
         for (const tm of pendingToolMessages) {
           attachMessage(session, tm.role, tm.content, tm.extra);
         }
-        attachMessage(session, "assistant", result.content);
+        attachMessage(session, "assistant", result.content, {
+          ...(result.toolCalls ? { toolCalls: result.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })) } : {}),
+          ...(result.fileChanges && result.fileChanges.length > 0 ? { fileChanges: result.fileChanges } : {})
+        });
         session.status = "idle";
         sessionStore.set(id, { ...session });
         persistSessions();
@@ -2635,7 +2675,10 @@ const server = createServer(async (request, response) => {
         for (const tm of pendingToolMessages) {
           attachMessage(session, tm.role, tm.content, tm.extra);
         }
-        attachMessage(session, "assistant", result.content);
+        attachMessage(session, "assistant", result.content, {
+          ...(result.toolCalls ? { toolCalls: result.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })) } : {}),
+          ...(result.fileChanges && result.fileChanges.length > 0 ? { fileChanges: result.fileChanges } : {})
+        });
         session.status = "idle";
         sessionStore.set(session.id, { ...session });
         persistSessions();
@@ -2659,21 +2702,108 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    /* DELETE /api/messages/:id — delete a message from its session */
+    /* DELETE /api/messages/:id — delete a message pair (user + all assistant/tool messages in that round) */
     if (request.method === "DELETE" && request.url?.match(/^\/api\/messages\/[^/]+$/)) {
       const messageId = request.url.split("/")[3];
       let found = false;
+      let deletedCount = 0;
       for (const session of sessionStore.values()) {
         const index = session.messages.findIndex((m) => m.id === messageId);
         if (index !== -1) {
-          session.messages.splice(index, 1);
+          const msg = session.messages[index];
+          if (msg.role === "user") {
+            // Delete from this user message up to (but not including) the next user message
+            let endIndex = index + 1;
+            while (endIndex < session.messages.length && session.messages[endIndex].role !== "user") {
+              endIndex++;
+            }
+            deletedCount = endIndex - index;
+            session.messages.splice(index, deletedCount);
+          } else {
+            // If not a user message, just delete the single message (fallback)
+            session.messages.splice(index, 1);
+            deletedCount = 1;
+          }
           sessionStore.set(session.id, { ...session });
           persistSessions();
           found = true;
           break;
         }
       }
-      sendJson(response, 200, { ok: true, deleted: found });
+      sendJson(response, 200, { ok: true, deleted: found, deletedCount });
+      return;
+    }
+
+    /* POST /api/sessions/:id/restore — restore a checkpoint by reverting file changes and removing the message pair.
+       Body: { messageId: string } where messageId is the user message ID.
+       Returns: { prompt: string, restoredFiles: string[] } */
+    if (request.method === "POST" && request.url?.match(/^\/api\/sessions\/[^/]+\/restore$/)) {
+      const sessionId = request.url.split("/")[3];
+      const session = sessionStore.get(sessionId);
+      if (!session) {
+        sendJson(response, 404, { error: "Session not found" });
+        return;
+      }
+
+      const body = await readJsonBody(request) as { messageId?: string };
+      if (!body.messageId) {
+        sendJson(response, 400, { error: "Missing messageId" });
+        return;
+      }
+
+      const userIndex = session.messages.findIndex((m) => m.id === body.messageId);
+      if (userIndex === -1 || session.messages[userIndex].role !== "user") {
+        sendJson(response, 404, { error: "User message not found" });
+        return;
+      }
+
+      const userMessage = session.messages[userIndex];
+      const prompt = userMessage.content;
+
+      // Find the end of this message pair (up to next user message)
+      let endIndex = userIndex + 1;
+      while (endIndex < session.messages.length && session.messages[endIndex].role !== "user") {
+        endIndex++;
+      }
+
+      // Collect all fileChanges from messages in this round
+      const roundMessages = session.messages.slice(userIndex, endIndex);
+      const allFileChanges: FileChange[] = [];
+      for (const msg of roundMessages) {
+        if (msg.fileChanges) {
+          allFileChanges.push(...msg.fileChanges);
+        }
+      }
+
+      // Revert file changes in reverse order (last change first)
+      const restoredFiles: string[] = [];
+      for (let i = allFileChanges.length - 1; i >= 0; i--) {
+        const fc = allFileChanges[i];
+        const absPath = path.resolve(workspaceRoot, fc.filePath);
+        if (!absPath.startsWith(workspaceRoot)) continue;
+        try {
+          if (fc.isNewFile) {
+            // File was newly created — delete it
+            await unlink(absPath);
+            console.log(`[restore] Deleted new file: ${fc.filePath}`);
+          } else {
+            // File existed before — restore previous content
+            await writeFile(absPath, fc.previousContent, "utf8");
+            console.log(`[restore] Restored: ${fc.filePath}`);
+          }
+          restoredFiles.push(fc.filePath);
+        } catch (err) {
+          console.error(`[restore] Failed to restore ${fc.filePath}:`, (err as Error).message);
+        }
+      }
+
+      // Remove the message pair from session
+      session.messages.splice(userIndex, endIndex - userIndex);
+      session.updatedAt = new Date().toISOString();
+      sessionStore.set(session.id, { ...session });
+      persistSessions();
+
+      sendJson(response, 200, { ok: true, prompt, restoredFiles, deletedCount: endIndex - userIndex });
       return;
     }
 
@@ -2712,8 +2842,8 @@ const server = createServer(async (request, response) => {
       const onToolCall = (payload: { messageId: string; toolCallId: string; toolName: string; arguments?: string }) => {
         response.write(`data: ${JSON.stringify({ type: "tool_call", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, arguments: payload.arguments })}\n\n`);
       };
-      const onToolResult = (payload: { messageId: string; toolCallId: string; toolName: string; result?: string; isError?: boolean }) => {
-        response.write(`data: ${JSON.stringify({ type: "tool_result", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, result: payload.result, isError: payload.isError })}\n\n`);
+      const onToolResult = (payload: { messageId: string; toolCallId: string; toolName: string; result?: string; isError?: boolean; fileChange?: FileChange }) => {
+        response.write(`data: ${JSON.stringify({ type: "tool_result", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, result: payload.result, isError: payload.isError, fileChange: payload.fileChange })}\n\n`);
       };
 
       emitter.on("token", onToken);

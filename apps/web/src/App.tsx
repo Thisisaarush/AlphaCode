@@ -36,6 +36,7 @@ import {
   PanelRight,
   Play,
   Plus,
+  RotateCcw,
   Search,
   Settings2,
   Sparkles,
@@ -48,7 +49,7 @@ import {
   Zap
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { APP_NAME, type AuthStatusResponse, type CommandRun, type GitHubDeviceCodeResponse, type GitHubPollResponse, type ProviderId, type SessionDetail, type WorkspaceSnapshot } from "@alpha-code/shared";
+import { APP_NAME, type AuthStatusResponse, type CommandRun, type FileChange, type GitHubDeviceCodeResponse, type GitHubPollResponse, type ProviderId, type SessionDetail, type SessionMessage, type WorkspaceSnapshot } from "@alpha-code/shared";
 
 /* Electron preload exposes window.alphaCode on desktop */
 interface AlphaCodeBridge {
@@ -316,6 +317,7 @@ export default function App() {
     arguments?: string;
     result?: string;
     isError?: boolean;
+    fileChange?: FileChange;
     status: "running" | "done" | "error";
   }>>([]);
 
@@ -445,6 +447,7 @@ export default function App() {
           arguments?: string;
           result?: string;
           isError?: boolean;
+          fileChange?: FileChange;
         };
 
         if (data.type === "token" && data.token) {
@@ -473,7 +476,7 @@ export default function App() {
           setActiveToolCalls((prev) =>
             prev.map((tc) =>
               tc.toolCallId === data.toolCallId
-                ? { ...tc, result: data.result, isError: data.isError, status: data.isError ? "error" : "done" }
+                ? { ...tc, result: data.result, isError: data.isError, fileChange: data.fileChange, status: data.isError ? "error" : "done" }
                 : tc
             )
           );
@@ -528,6 +531,96 @@ export default function App() {
 
   // Whether AI is currently streaming a response
   const isStreaming = !!(streamingContent || eventSourceRef.current);
+
+  /** Group messages into checkpoint pairs: each pair starts with a user message
+   *  and includes all subsequent assistant/tool messages until the next user message. */
+  const checkpointPairs = useMemo(() => {
+    if (!sessionDetail) return [];
+    const pairs: Array<{
+      userMessage: SessionMessage;
+      responseMessages: SessionMessage[];
+      fileChanges: FileChange[];
+    }> = [];
+    const msgs = sessionDetail.messages;
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].role === "user") {
+        const userMsg = msgs[i];
+        const responseMessages: SessionMessage[] = [];
+        const fileChanges: FileChange[] = [];
+        let j = i + 1;
+        while (j < msgs.length && msgs[j].role !== "user") {
+          responseMessages.push(msgs[j]);
+          if (msgs[j].fileChanges) {
+            fileChanges.push(...msgs[j].fileChanges!);
+          }
+          j++;
+        }
+        pairs.push({ userMessage: userMsg, responseMessages, fileChanges });
+      }
+    }
+    return pairs;
+  }, [sessionDetail]);
+
+  /** Compute streaming status label */
+  const streamingStatusLabel = useMemo(() => {
+    // If there are active tool calls, show the status of the latest running one
+    const runningTool = activeToolCalls.find((tc) => tc.status === "running");
+    if (runningTool) {
+      let parsedArgs: Record<string, unknown> = {};
+      try { parsedArgs = JSON.parse(runningTool.arguments || "{}") as Record<string, unknown>; } catch { /* ignore */ }
+      const filePath = parsedArgs.path as string | undefined;
+      switch (runningTool.toolName) {
+        case "read_file": return `Reading ${filePath || "file"}...`;
+        case "write_file": return `Writing ${filePath || "file"}...`;
+        case "list_files": return `Listing ${filePath || "."}...`;
+        case "run_command": return `Running \`${(parsedArgs.command as string || "command").slice(0, 40)}\`...`;
+        default: return `Running ${runningTool.toolName}...`;
+      }
+    }
+    // If all tool calls are done but we're still streaming (AI processing next round)
+    if (activeToolCalls.length > 0 && activeToolCalls.every((tc) => tc.status !== "running")) {
+      return "Thinking...";
+    }
+    // If streaming content is arriving, show nothing (text is visible)
+    if (streamingContent) return null;
+    // If we have a streaming message ID but no content yet, show "Thinking..."
+    if (isStreaming) return "Thinking...";
+    return null;
+  }, [activeToolCalls, streamingContent, isStreaming]);
+
+  /** Restore a checkpoint — revert file changes and put prompt back in input */
+  async function handleRestoreCheckpoint(userMessageId: string) {
+    if (!activeSessionId) return;
+    try {
+      const res = await fetch(`${serverUrl}/api/sessions/${activeSessionId}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId: userMessageId })
+      });
+      const data = await res.json() as { ok: boolean; prompt?: string; restoredFiles?: string[] };
+      if (data.ok) {
+        // Put prompt text back into input
+        if (data.prompt) setPrompt(data.prompt);
+        // Reload session
+        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+        setSessionDetail(payload);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  /** Delete a message pair (user message + all response messages in that round) */
+  async function handleDeletePair(userMessageId: string) {
+    if (!activeSessionId) return;
+    try {
+      await fetch(`${serverUrl}/api/messages/${userMessageId}`, { method: "DELETE" });
+      const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+      setSessionDetail(payload);
+    } catch {
+      // Ignore
+    }
+  }
 
   /** Stop an in-flight AI streaming response */
   async function handleStopStreaming() {
@@ -1527,64 +1620,128 @@ export default function App() {
                   <div className="message-timeline compact-scroll">
                     {sessionDetail ? (
                       <>
-                        {sessionDetail.messages.map((message, msgIdx) => {
-                          // Skip tool-result messages — they are rendered inline within their parent assistant message
-                          if (message.role === "tool") return null;
+                        {checkpointPairs.map((pair, pairIdx) => {
+                          // Find the final assistant text message (non-empty content, non-tool)
+                          const assistantMessages = pair.responseMessages.filter((m) => m.role === "assistant");
+                          const toolMessages = pair.responseMessages.filter((m) => m.role === "tool");
 
-                          // For assistant messages with toolCalls, find the matching tool result messages
-                          const toolResults: Record<string, { result: string; isError?: boolean }> = {};
-                          if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
-                            // Look ahead in messages for tool results
-                            for (let i = msgIdx + 1; i < sessionDetail.messages.length; i++) {
-                              const m = sessionDetail.messages[i];
-                              if (m.role === "tool" && m.toolCallId) {
-                                toolResults[m.toolCallId] = { result: m.content, isError: m.isError };
-                              } else if (m.role !== "tool") {
-                                break; // Stop once we hit a non-tool message
-                              }
+                          // Build tool results map for all tool-call assistant messages
+                          const toolResultsMap: Record<string, { result: string; isError?: boolean }> = {};
+                          for (const tm of toolMessages) {
+                            if (tm.toolCallId) {
+                              toolResultsMap[tm.toolCallId] = { result: tm.content, isError: tm.isError };
                             }
                           }
 
+                          // Collect all tool calls across all assistant messages in this pair
+                          const allToolCalls = assistantMessages.flatMap((m) => m.toolCalls || []);
+                          // The final assistant message with actual content
+                          const finalAssistant = [...assistantMessages].reverse().find((m) => m.content.trim());
+
                           return (
-                            <article key={message.id} className={`message-turn ${message.role}`}>
-                              <div className="message-meta">
-                                <span>{message.role}</span>
-                                <span>{formatTime(message.createdAt)}</span>
-                                <div className="message-actions">
-                                  <button
-                                    className="message-action-btn"
-                                    type="button"
-                                    title="Copy message"
-                                    onClick={() => {
-                                      void navigator.clipboard.writeText(message.content);
-                                    }}
-                                  >
-                                    <Copy size={12} />
-                                  </button>
-                                  <button
-                                    className="message-action-btn"
-                                    type="button"
-                                    title="Delete message"
-                                    onClick={async () => {
-                                      try {
-                                        await fetch(`${serverUrl}/api/messages/${message.id}`, { method: "DELETE" });
-                                        if (activeSessionId) {
-                                          const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
-                                          setSessionDetail(payload);
-                                        }
-                                      } catch {
-                                        // Ignore
-                                      }
-                                    }}
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
+                            <div key={pair.userMessage.id} className="checkpoint-pair">
+                              {/* User message */}
+                              <article className="message-turn user">
+                                <div className="message-meta">
+                                  <span>user</span>
+                                  <span>{formatTime(pair.userMessage.createdAt)}</span>
+                                  <div className="message-actions">
+                                    <button
+                                      className="message-action-btn"
+                                      type="button"
+                                      title="Copy message"
+                                      onClick={() => {
+                                        void navigator.clipboard.writeText(pair.userMessage.content);
+                                      }}
+                                    >
+                                      <Copy size={12} />
+                                    </button>
+                                    <button
+                                      className="message-action-btn"
+                                      type="button"
+                                      title="Restore checkpoint — revert file changes and edit prompt"
+                                      onClick={() => void handleRestoreCheckpoint(pair.userMessage.id)}
+                                    >
+                                      <RotateCcw size={12} />
+                                    </button>
+                                    <button
+                                      className="message-action-btn"
+                                      type="button"
+                                      title="Delete this turn"
+                                      onClick={() => void handleDeletePair(pair.userMessage.id)}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
-                              {/* Message text content */}
-                              {message.content && (
                                 <div className="message-content">
-                                  {message.role === "assistant" ? (
+                                  <pre>{pair.userMessage.content}</pre>
+                                </div>
+                              </article>
+
+                              {/* Tool call blocks — grouped across all assistant messages in this pair */}
+                              {allToolCalls.length > 0 && (
+                                <div className="tool-calls-container">
+                                  {allToolCalls.map((tc) => {
+                                    const tr = toolResultsMap[tc.id];
+                                    let parsedArgs: Record<string, unknown> = {};
+                                    try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+                                    const filePath = parsedArgs.path as string | undefined;
+                                    const toolLabel = tc.name === "run_command" ? `$ ${(parsedArgs.command as string) || tc.name}`
+                                      : tc.name === "read_file" ? `Read ${filePath || ""}`
+                                      : tc.name === "write_file" ? `Write ${filePath || ""}`
+                                      : tc.name === "list_files" ? `List ${filePath || "."}`
+                                      : tc.name;
+
+                                    // Find file change stats for this tool call (write_file only)
+                                    const fc = pair.fileChanges.find((f) => f.toolCallId === tc.id);
+
+                                    return (
+                                      <details key={tc.id} className={`tool-call-block ${tr?.isError ? "error" : "done"}`}>
+                                        <summary className="tool-call-header">
+                                          <Wrench size={13} />
+                                          <span className="tool-call-name">{toolLabel}</span>
+                                          {fc && (
+                                            <span className="file-change-stats">
+                                              <span className="lines-added">+{fc.linesAdded}</span>
+                                              <span className="lines-deleted">-{fc.linesDeleted}</span>
+                                            </span>
+                                          )}
+                                          {tr?.isError ? (
+                                            <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
+                                          ) : (
+                                            <span className="tool-call-status done"><Check size={11} /> done</span>
+                                          )}
+                                        </summary>
+                                        {tr && (
+                                          <pre className="tool-call-output">{tr.result}</pre>
+                                        )}
+                                      </details>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Final assistant text content */}
+                              {finalAssistant && finalAssistant.content && (
+                                <article className="message-turn assistant">
+                                  <div className="message-meta">
+                                    <span>assistant</span>
+                                    <span>{formatTime(finalAssistant.createdAt)}</span>
+                                    <div className="message-actions">
+                                      <button
+                                        className="message-action-btn"
+                                        type="button"
+                                        title="Copy message"
+                                        onClick={() => {
+                                          void navigator.clipboard.writeText(finalAssistant.content);
+                                        }}
+                                      >
+                                        <Copy size={12} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="message-content">
                                     <ReactMarkdown
                                       remarkPlugins={[remarkGfm]}
                                       rehypePlugins={[rehypeHighlight]}
@@ -1607,46 +1764,26 @@ export default function App() {
                                           );
                                         },
                                       }}
-                                    >{message.content}</ReactMarkdown>
-                                  ) : (
-                                    <pre>{message.content}</pre>
-                                  )}
-                                </div>
+                                    >{finalAssistant.content}</ReactMarkdown>
+                                  </div>
+                                </article>
                               )}
-                              {/* Tool call blocks — shown on assistant messages that invoked tools */}
-                              {message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0 && (
-                                <div className="tool-calls-container">
-                                  {message.toolCalls.map((tc) => {
-                                    const tr = toolResults[tc.id];
-                                    let parsedArgs: Record<string, unknown> = {};
-                                    try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
-                                    const toolLabel = tc.name === "run_command" ? `$ ${(parsedArgs.command as string) || tc.name}`
-                                      : tc.name === "read_file" ? `Read ${(parsedArgs.filePath as string) || ""}`
-                                      : tc.name === "write_file" ? `Write ${(parsedArgs.filePath as string) || ""}`
-                                      : tc.name === "list_files" ? `List ${(parsedArgs.dirPath as string) || "."}`
-                                      : tc.name;
-                                    return (
-                                      <details key={tc.id} className={`tool-call-block ${tr?.isError ? "error" : "done"}`}>
-                                        <summary className="tool-call-header">
-                                          <Wrench size={13} />
-                                          <span className="tool-call-name">{toolLabel}</span>
-                                          {tr?.isError ? (
-                                            <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
-                                          ) : (
-                                            <span className="tool-call-status done"><Check size={11} /> done</span>
-                                          )}
-                                        </summary>
-                                        {tr && (
-                                          <pre className="tool-call-output">{tr.result}</pre>
-                                        )}
-                                      </details>
-                                    );
-                                  })}
-                                </div>
+
+                              {/* Checkpoint separator */}
+                              {pairIdx < checkpointPairs.length - 1 && (
+                                <div className="checkpoint-separator" />
                               )}
-                            </article>
+                            </div>
                           );
                         })}
+
+                        {/* Streaming status indicator */}
+                        {streamingStatusLabel && !streamingContent && (
+                          <div className="streaming-status-indicator">
+                            <LoaderCircle size={14} className="spin" />
+                            <span>{streamingStatusLabel}</span>
+                          </div>
+                        )}
 
                         {/* Active tool calls — shown during streaming when tools are executing */}
                         {activeToolCalls.length > 0 && (
@@ -1654,16 +1791,23 @@ export default function App() {
                             {activeToolCalls.map((tc) => {
                               let parsedArgs: Record<string, unknown> = {};
                               try { parsedArgs = JSON.parse(tc.arguments || "{}") as Record<string, unknown>; } catch { /* ignore */ }
+                              const filePath = parsedArgs.path as string | undefined;
                               const toolLabel = tc.toolName === "run_command" ? `$ ${(parsedArgs.command as string) || tc.toolName}`
-                                : tc.toolName === "read_file" ? `Read ${(parsedArgs.filePath as string) || ""}`
-                                : tc.toolName === "write_file" ? `Write ${(parsedArgs.filePath as string) || ""}`
-                                : tc.toolName === "list_files" ? `List ${(parsedArgs.dirPath as string) || "."}`
+                                : tc.toolName === "read_file" ? `Read ${filePath || ""}`
+                                : tc.toolName === "write_file" ? `Write ${filePath || ""}`
+                                : tc.toolName === "list_files" ? `List ${filePath || "."}`
                                 : tc.toolName;
                               return (
                                 <details key={tc.toolCallId} className={`tool-call-block ${tc.status}`} open={tc.status === "running"}>
                                   <summary className="tool-call-header">
                                     {tc.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
                                     <span className="tool-call-name">{toolLabel}</span>
+                                    {tc.fileChange && (
+                                      <span className="file-change-stats">
+                                        <span className="lines-added">+{tc.fileChange.linesAdded}</span>
+                                        <span className="lines-deleted">-{tc.fileChange.linesDeleted}</span>
+                                      </span>
+                                    )}
                                     {tc.status === "running" && (
                                       <span className="tool-call-status running">running</span>
                                     )}

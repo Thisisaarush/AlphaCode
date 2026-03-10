@@ -23,6 +23,15 @@ export const toolResultSchema = z.object({
   isError: z.boolean().optional()
 });
 
+export const fileChangeSchema = z.object({
+  toolCallId: z.string(),
+  filePath: z.string(),            // relative path from workspace root
+  linesAdded: z.number(),
+  linesDeleted: z.number(),
+  previousContent: z.string(),     // content before the write (empty string for new files)
+  isNewFile: z.boolean()
+});
+
 export const providerIdSchema = z.enum([
   "copilot",
   "openrouter",
@@ -75,7 +84,9 @@ export const sessionMessageSchema = z.object({
   // Present on tool-result messages (role === "tool")
   toolCallId: z.string().optional(),
   toolName: z.string().optional(),
-  isError: z.boolean().optional()
+  isError: z.boolean().optional(),
+  // File changes made by tool calls in this response round (stored on final assistant message)
+  fileChanges: z.array(fileChangeSchema).optional()
 });
 
 export const commandRunSchema = z.object({
@@ -152,6 +163,7 @@ export type SessionMessage = z.infer<typeof sessionMessageSchema>;
 export type CommandRun = z.infer<typeof commandRunSchema>;
 export type ToolCall = z.infer<typeof toolCallSchema>;
 export type ToolResult = z.infer<typeof toolResultSchema>;
+export type FileChange = z.infer<typeof fileChangeSchema>;
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 export type PromptSuggestion = z.infer<typeof promptSuggestionSchema>;
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>;
