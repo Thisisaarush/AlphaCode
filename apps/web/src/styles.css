@@ -1335,6 +1335,65 @@ kbd {
   height: 100%;
 }
 
+/* --- Context window & usage indicators --- */
+.dock-tray-usage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.dock-tray-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.context-bar {
+  width: 48px;
+  height: 4px;
+  background: var(--surface-base);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.context-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease, background-color 0.3s ease;
+  min-width: 1px;
+}
+
+.context-bar-label {
+  font-size: 11px;
+  color: var(--text-weak);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-tray-requests {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-weak);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.dock-tray-requests svg {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.dock-tray-no-session {
+  color: var(--text-weak);
+  font-size: 11px;
+  margin-left: auto;
+}
+
 /* ===== Right panel (file editor, toggled) ===== */
 .right-panel {
   border-left: 1px solid var(--border-weaker-base);

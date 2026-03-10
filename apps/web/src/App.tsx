@@ -43,7 +43,8 @@ import {
   Terminal,
   TerminalSquare,
   Trash2,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { APP_NAME, type AuthStatusResponse, type CommandRun, type GitHubDeviceCodeResponse, type GitHubPollResponse, type ProviderId, type SessionDetail, type WorkspaceSnapshot } from "@alpha-code/shared";
@@ -77,6 +78,67 @@ type FsEntry = {
 const serverUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3030";
 const wsUrl = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:3031";
 
+/** Known model context window sizes (in tokens). Used for context usage indicator. */
+const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  // GPT-5 family
+  "gpt-5": 1_000_000,
+  "gpt-5.4": 1_000_000,
+  "gpt-5-mini": 1_000_000,
+  "gpt-5.2-codex": 1_000_000,
+  "gpt-5.3-codex": 1_000_000,
+  // GPT-4 family
+  "gpt-4o": 128_000,
+  "gpt-4o-mini": 128_000,
+  "gpt-4.1": 1_000_000,
+  "gpt-4.1-mini": 1_000_000,
+  "gpt-4.1-nano": 1_000_000,
+  "gpt-4-turbo": 128_000,
+  // Reasoning models
+  "o1": 200_000,
+  "o1-mini": 128_000,
+  "o1-pro": 200_000,
+  "o3": 200_000,
+  "o3-mini": 200_000,
+  "o4-mini": 200_000,
+  // Claude family
+  "claude-sonnet-4-20250514": 200_000,
+  "claude-opus-4-20250514": 200_000,
+  "claude-3.5-sonnet": 200_000,
+  "claude-3-opus": 200_000,
+  "claude-3-haiku": 200_000,
+  "claude-3.5-haiku": 200_000,
+  // Gemini
+  "gemini-2.5-pro": 1_000_000,
+  "gemini-2.0-flash": 1_000_000,
+  "gemini-1.5-pro": 1_000_000,
+  // Grok
+  "grok-code-fast-1": 128_000,
+  // ChatGPT
+  "chatgpt-4o-latest": 128_000,
+};
+
+/** Get context limit for a model, falling back to fuzzy prefix match or default */
+function getModelContextLimit(modelId: string): number {
+  // Exact match
+  if (MODEL_CONTEXT_LIMITS[modelId]) return MODEL_CONTEXT_LIMITS[modelId];
+  // Strip date suffix and try again (e.g. "gpt-4o-2024-08-06" → "gpt-4o")
+  const base = modelId.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
+  if (MODEL_CONTEXT_LIMITS[base]) return MODEL_CONTEXT_LIMITS[base];
+  // Prefix match
+  for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
+    if (modelId.startsWith(key)) return limit;
+  }
+  // Default fallback
+  return 128_000;
+}
+
+/** Format token count for display (e.g. 12345 → "12.3K", 1234567 → "1.2M") */
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
+}
+
 const railItems: Array<{ key: SidebarTab; icon: typeof MessageSquare; label: string }> = [
   { key: "chat", icon: MessageSquare, label: "Threads" },
   { key: "git", icon: FolderGit2, label: "Changes" }
@@ -102,10 +164,12 @@ function prettifyModelId(raw: string): string {
     "gpt-4.1-nano": "GPT 4.1 Nano",
     "gpt-4.5-preview": "GPT 4.5 Preview",
     "gpt-5": "GPT 5",
-    "gpt-5.3": "GPT 5.3",
-    "gpt-5.4": "GPT 5.4",
     "gpt-5-mini": "GPT 5 Mini",
     "gpt-5-turbo": "GPT 5 Turbo",
+    "gpt-5.2-codex": "GPT 5.2 Codex",
+    "gpt-5.3": "GPT 5.3",
+    "gpt-5.3-codex": "GPT 5.3 Codex",
+    "gpt-5.4": "GPT 5.4",
     "o1": "O1",
     "o1-mini": "O1 Mini",
     "o1-preview": "O1 Preview",
@@ -113,6 +177,17 @@ function prettifyModelId(raw: string): string {
     "o3-mini": "O3 Mini",
     "o4-mini": "O4 Mini",
     "chatgpt-4o-latest": "ChatGPT 4o Latest",
+    "claude-haiku-4.5": "Claude Haiku 4.5",
+    "claude-opus-4.5": "Claude Opus 4.5",
+    "claude-opus-4.6": "Claude Opus 4.6",
+    "claude-sonnet-4": "Claude Sonnet 4",
+    "claude-sonnet-4.5": "Claude Sonnet 4.5",
+    "claude-sonnet-4.6": "Claude Sonnet 4.6",
+    "gemini-3-flash": "Gemini 3 Flash",
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "gemini-2.5-pro": "Gemini 2.5 Pro",
+    "gemini-2.5-flash": "Gemini 2.5 Flash",
+    "grok-code-fast-1": "Grok Code Fast 1",
   };
 
   // Strip date suffixes like -20250514, -2025-04-14
@@ -141,6 +216,16 @@ function prettifyModelId(raw: string): string {
   if (stripped.startsWith("gemini-")) {
     return stripped
       .replace("gemini-", "Gemini ")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Grok models
+  if (stripped.startsWith("grok-")) {
+    return stripped
+      .replace("grok-", "Grok ")
       .replace(/-/g, " ")
       .replace(/\b\w/g, (c) => c.toUpperCase())
       .replace(/\s+/g, " ")
@@ -239,6 +324,24 @@ export default function App() {
   const [autocompleteQuery, setAutocompleteQuery] = useState("");
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
 
+  // Context window and usage tracking
+  const [sessionUsage, setSessionUsage] = useState<{
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalTokens: number;
+    requestCount: number;
+  }>({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+
+  // Provider-level usage / quota tracking
+  const [providerUsage, setProviderUsage] = useState<Array<{
+    providerId: string;
+    usagePercent: number | null;
+    usageLabel: string;
+    details: string;
+    hasQuota: boolean;
+  }>>([]);
+  const providerUsageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
     if (!response.ok) {
@@ -247,6 +350,33 @@ export default function App() {
     }
     return (await response.json()) as T;
   }
+
+  /** Fetch provider usage data from server */
+  const fetchProviderUsage = useCallback(async () => {
+    try {
+      const data = await fetch(`${serverUrl}/api/provider-usage`).then((r) => r.json()) as {
+        providers: Array<{
+          providerId: string;
+          usagePercent: number | null;
+          usageLabel: string;
+          details: string;
+          hasQuota: boolean;
+        }>;
+      };
+      setProviderUsage(data.providers);
+    } catch {
+      // Silently ignore — usage display is best-effort
+    }
+  }, []);
+
+  // Poll provider usage on mount and every 60 seconds
+  useEffect(() => {
+    fetchProviderUsage();
+    providerUsageTimerRef.current = setInterval(fetchProviderUsage, 60_000);
+    return () => {
+      if (providerUsageTimerRef.current) clearInterval(providerUsageTimerRef.current);
+    };
+  }, [fetchProviderUsage]);
 
   /** Connect to SSE stream for a session. Call this after sending a message. */
   const connectStream = useCallback((sessionId: string) => {
@@ -270,6 +400,7 @@ export default function App() {
           messageId?: string;
           token?: string;
           error?: string;
+          usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
         };
 
         if (data.type === "token" && data.token) {
@@ -279,6 +410,18 @@ export default function App() {
           streamingContentRef.current += data.token;
           setStreamingContent(streamingContentRef.current);
         } else if (data.type === "done") {
+          // Accumulate usage data if present
+          if (data.usage) {
+            setSessionUsage((prev) => ({
+              totalInputTokens: prev.totalInputTokens + data.usage!.inputTokens,
+              totalOutputTokens: prev.totalOutputTokens + data.usage!.outputTokens,
+              totalTokens: prev.totalTokens + data.usage!.totalTokens,
+              requestCount: prev.requestCount + 1,
+            }));
+          } else {
+            // Even without usage data, increment request count
+            setSessionUsage((prev) => ({ ...prev, requestCount: prev.requestCount + 1 }));
+          }
           // Stream complete — reload session to get final message from server
           setStreamingContent("");
           setStreamingMessageId(null);
@@ -287,6 +430,8 @@ export default function App() {
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
             .catch(() => undefined);
+          // Refresh provider usage (rate limit headers may have updated)
+          fetchProviderUsage();
           es.close();
           eventSourceRef.current = null;
         } else if (data.type === "error") {
@@ -309,7 +454,7 @@ export default function App() {
       // Reconnection is handled by EventSource automatically, but if the
       // stream was intentionally closed we just ignore
     };
-  }, []);
+  }, [fetchProviderUsage]);
 
   // Whether AI is currently streaming a response
   const isStreaming = !!(streamingContent || eventSourceRef.current);
@@ -877,6 +1022,8 @@ export default function App() {
         });
         setActiveSessionId(payload.id);
         setSessionDetail(payload);
+        // Reset usage tracking for new session
+        setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
         // Connect to SSE stream for real-time token delivery
         connectStream(payload.id);
       } else {
@@ -910,6 +1057,7 @@ export default function App() {
     setActiveSessionId("");
     setSessionDetail(null);
     setPrompt("");
+    setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
   }
 
   async function handleDeleteSession(sessionId: string) {
@@ -1528,7 +1676,42 @@ export default function App() {
                           </select>
                         </label>
                       </div>
-                      <span>{sessionDetail ? sessionDetail.messages.length + " messages" : "No session"}</span>
+                      {(() => {
+                        // Find provider ID from label
+                        const currentProviderId = snapshot?.providers.find((p) => p.label === provider)?.id ?? "";
+                        const usage = providerUsage.find((u) => u.providerId === currentProviderId);
+                        const hasUsage = usage && usage.usageLabel !== "No usage yet" && usage.usageLabel !== "No API key";
+                        const barPercent = usage?.usagePercent ?? 0;
+                        const barColor = barPercent > 80 ? "var(--color-error)" : barPercent > 50 ? "#e8a832" : "var(--color-success)";
+
+                        return (
+                          <div className="dock-tray-usage">
+                            {hasUsage ? (
+                              <div className="dock-tray-context" title={usage.details}>
+                                {usage.usagePercent !== null ? (
+                                  <>
+                                    <div className="context-bar">
+                                      <div className="context-bar-fill" style={{ width: `${barPercent}%`, backgroundColor: barColor }} />
+                                    </div>
+                                    <span className="context-bar-label">{usage.usageLabel} ({barPercent.toFixed(1)}%)</span>
+                                  </>
+                                ) : (
+                                  <span className="context-bar-label">{usage.usageLabel}</span>
+                                )}
+                              </div>
+                            ) : null}
+                            {sessionDetail ? (
+                              <span className="dock-tray-requests" title={`${sessionUsage.requestCount} AI request${sessionUsage.requestCount !== 1 ? "s" : ""} in this session\n${sessionUsage.totalTokens > 0 ? `Tokens: ${formatTokens(sessionUsage.totalInputTokens)} in / ${formatTokens(sessionUsage.totalOutputTokens)} out (${formatTokens(sessionUsage.totalTokens)} total)` : ""}`}>
+                                <Zap size={11} />
+                                {sessionUsage.requestCount} req{sessionUsage.requestCount !== 1 ? "s" : ""}
+                                {sessionUsage.totalTokens > 0 ? ` · ${formatTokens(sessionUsage.totalTokens)}` : ""}
+                              </span>
+                            ) : (
+                              <span className="dock-tray-no-session">No session</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
