@@ -21,12 +21,15 @@ import {
   type FileEntry,
   type ProviderId,
   type SessionDetail,
-  type SessionSummary
+  type SessionSummary,
+  type ToolCall
 } from "@alpha-code/shared";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const workspaceRoot = path.resolve(__dirname, "../../..");
+let workspaceRoot = process.env.WORKSPACE_ROOT
+  ? path.resolve(process.env.WORKSPACE_ROOT)
+  : path.resolve(__dirname, "../../..");
 const port = Number(process.env.PORT ?? 3030);
 
 const allowedExtensions = new Set([
@@ -42,7 +45,10 @@ const promptSuggestions = [
   { id: "run", label: "Run the web and desktop apps locally" }
 ];
 
-const sessionStore = new Map<string, SessionDetail>();
+/** Server-side session storage — extends the wire type with workspace tagging */
+type StoredSession = SessionDetail & { workspace?: string };
+
+const sessionStore = new Map<string, StoredSession>();
 const commandRunStore = new Map<string, CommandRun>();
 
 // Abort controllers for in-flight AI streaming requests (keyed by session id)
@@ -130,6 +136,101 @@ async function persistAuth(): Promise<void> {
   } catch (err) {
     console.error("[auth] Failed to persist auth:", err instanceof Error ? err.message : err);
   }
+}
+
+/* ----------------------------------------------------------------
+   Persistent session storage — ~/.alpha-code/sessions.json
+   Saves all chat sessions to disk so they survive server restarts.
+   Uses debounced writes to avoid thrashing on rapid updates.
+   ---------------------------------------------------------------- */
+const SESSIONS_FILE = path.join(AUTH_DIR, "sessions.json");
+
+let sessionPersistTimer: ReturnType<typeof setTimeout> | null = null;
+const SESSION_PERSIST_DEBOUNCE_MS = 500;
+
+async function loadPersistedSessions(): Promise<void> {
+  try {
+    const raw = await readFile(SESSIONS_FILE, "utf8");
+    const data = JSON.parse(raw) as Record<string, StoredSession>;
+    let count = 0;
+    for (const [id, session] of Object.entries(data)) {
+      if (session && typeof session === "object" && session.id) {
+        sessionStore.set(id, session);
+        count++;
+      }
+    }
+    console.log(`[sessions] Loaded ${count} persisted session(s) from ${SESSIONS_FILE}`);
+  } catch {
+    console.log("[sessions] No persisted sessions found (first run)");
+  }
+}
+
+function persistSessions(): void {
+  if (sessionPersistTimer) clearTimeout(sessionPersistTimer);
+  sessionPersistTimer = setTimeout(async () => {
+    try {
+      await mkdir(AUTH_DIR, { recursive: true });
+      const toSave: Record<string, StoredSession> = {};
+      for (const [id, session] of sessionStore.entries()) {
+        toSave[id] = session;
+      }
+      await writeFile(SESSIONS_FILE, JSON.stringify(toSave, null, 2), "utf8");
+      console.log(`[sessions] Persisted ${Object.keys(toSave).length} session(s) to ${SESSIONS_FILE}`);
+    } catch (err) {
+      console.error("[sessions] Failed to persist sessions:", err instanceof Error ? err.message : err);
+    }
+  }, SESSION_PERSIST_DEBOUNCE_MS);
+}
+
+/* ----------------------------------------------------------------
+   Persistent project/workspace list — ~/.alpha-code/projects.json
+   Tracks recently-opened project folders so the user can switch
+   between them quickly.
+   ---------------------------------------------------------------- */
+const PROJECTS_FILE = path.join(AUTH_DIR, "projects.json");
+
+interface RecentProject {
+  path: string;
+  name: string;
+  lastOpened: number; // epoch ms
+}
+
+let recentProjects: RecentProject[] = [];
+
+async function loadPersistedProjects(): Promise<void> {
+  try {
+    const raw = await readFile(PROJECTS_FILE, "utf8");
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) {
+      recentProjects = data;
+      console.log(`[projects] Loaded ${recentProjects.length} recent project(s) from ${PROJECTS_FILE}`);
+    }
+  } catch {
+    console.log("[projects] No persisted projects found (first run)");
+  }
+}
+
+async function persistProjects(): Promise<void> {
+  try {
+    await mkdir(AUTH_DIR, { recursive: true });
+    await writeFile(PROJECTS_FILE, JSON.stringify(recentProjects, null, 2), "utf8");
+  } catch (err) {
+    console.error("[projects] Failed to persist projects:", err instanceof Error ? err.message : err);
+  }
+}
+
+function touchProject(projectPath: string): void {
+  const name = path.basename(projectPath);
+  const existing = recentProjects.findIndex((p) => p.path === projectPath);
+  if (existing !== -1) {
+    recentProjects[existing].lastOpened = Date.now();
+  } else {
+    recentProjects.push({ path: projectPath, name, lastOpened: Date.now() });
+  }
+  // Keep max 20, sorted by most recent
+  recentProjects.sort((a, b) => b.lastOpened - a.lastOpened);
+  recentProjects = recentProjects.slice(0, 20);
+  void persistProjects();
 }
 
 // GitHub OAuth Device Flow state
@@ -785,19 +886,212 @@ function resolveModel(config: ProviderConfig, uiModel: string): string {
   return uiModel || config.defaultModel;
 }
 
-const SYSTEM_PROMPT = `You are Alpha Code, an AI coding assistant running inside a local-first code editor. You help users with software engineering tasks: inspecting code, planning implementations, writing code, running commands, and reviewing changes.
+function getSystemPrompt(): string {
+  return `You are Alpha Code, an AI coding assistant running inside a local-first code editor. You help users with software engineering tasks: inspecting code, planning implementations, writing code, running commands, and reviewing changes.
 
-Be concise and direct. Use markdown for code blocks. When suggesting file edits, show the exact code. When suggesting terminal commands, wrap them in \`\`\`bash blocks.
+Be concise and direct. Use markdown for code blocks.
 
-The user is working in a monorepo at: ${workspaceRoot}`;
+You have access to the following tools and MUST use them when the user asks you to perform actions:
+- run_command: Execute shell commands in the project directory (builds, tests, git, npm, node, etc.)
+- read_file: Read file contents from the workspace
+- write_file: Create or overwrite files in the workspace
+- list_files: List directory contents
+
+ALWAYS use the run_command tool when the user asks you to run something, check versions, execute tests, install packages, etc. Do NOT just suggest commands — actually run them using the tool. Similarly, use read_file to inspect code rather than asking the user to provide it.
+
+The user is working in a project at: ${workspaceRoot}
+Project name: ${path.basename(workspaceRoot)}`;
+}
+
+/** Build a compact file tree string for AI context (max ~200 entries) */
+async function getWorkspaceFileTree(): Promise<string> {
+  try {
+    const files = await collectFiles(workspaceRoot);
+    const paths = files.map((f) => f.path).slice(0, 200);
+    if (paths.length === 0) return "";
+    return `\nWorkspace file tree (${paths.length} files):\n${paths.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
+/* ================================================================
+   Tool Definitions — available to AI via function calling
+   ================================================================ */
+
+/** OpenAI / Copilot Chat Completions tool format */
+const AI_TOOLS_OPENAI = [
+  {
+    type: "function" as const,
+    function: {
+      name: "run_command",
+      description: "Execute a shell command in the user's project directory. Use this to run builds, tests, linters, git commands, or any CLI tool. The command runs in the workspace root directory.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "The shell command to execute (e.g., 'node -v', 'npm test', 'ls -la')" }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "read_file",
+      description: "Read the contents of a file in the workspace. Use this to inspect source code, config files, etc. The path should be relative to the workspace root.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path from workspace root (e.g., 'src/index.ts', 'package.json')" }
+        },
+        required: ["path"]
+      }
+    }
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_files",
+      description: "List files and directories in a given directory within the workspace. Returns entries with type indicators (dir/ or file).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative directory path from workspace root (e.g., 'src', '.'). Defaults to workspace root." }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "write_file",
+      description: "Write or overwrite a file in the workspace. Use this to create new files or edit existing ones. Provide the full file content.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path from workspace root (e.g., 'src/utils.ts')" },
+          content: { type: "string", description: "The complete file content to write" }
+        },
+        required: ["path", "content"]
+      }
+    }
+  }
+];
+
+/** Anthropic tool format */
+const AI_TOOLS_ANTHROPIC = AI_TOOLS_OPENAI.map((t) => ({
+  name: t.function.name,
+  description: t.function.description,
+  input_schema: t.function.parameters
+}));
+
+/** Copilot Responses API tool format (same as OpenAI but flat) */
+const AI_TOOLS_RESPONSES = AI_TOOLS_OPENAI.map((t) => ({
+  type: "function" as const,
+  name: t.function.name,
+  description: t.function.description,
+  parameters: t.function.parameters
+}));
+
+/** Execute a tool call and return the result string */
+async function executeTool(name: string, argsJson: string): Promise<{ result: string; isError: boolean }> {
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    return { result: `Error: Invalid JSON arguments: ${argsJson}`, isError: true };
+  }
+
+  switch (name) {
+    case "run_command": {
+      const command = String(args.command ?? "");
+      if (!command) return { result: "Error: No command provided", isError: true };
+      console.log(`[tool] run_command: ${command}`);
+      try {
+        const output = execSync(command, {
+          cwd: workspaceRoot,
+          encoding: "utf8",
+          timeout: 30000,
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`
+          }
+        });
+        return { result: output || "(no output)", isError: false };
+      } catch (err) {
+        const e = err as { stdout?: string; stderr?: string; status?: number; message?: string };
+        const out = (e.stdout ?? "") + (e.stderr ?? "");
+        return { result: out || e.message || "Command failed", isError: true };
+      }
+    }
+    case "read_file": {
+      const filePath = String(args.path ?? "");
+      if (!filePath) return { result: "Error: No path provided", isError: true };
+      const absPath = path.resolve(workspaceRoot, filePath);
+      if (!absPath.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
+      console.log(`[tool] read_file: ${filePath}`);
+      try {
+        const content = await readFile(absPath, "utf8");
+        // Truncate very large files
+        if (content.length > 100_000) {
+          return { result: content.slice(0, 100_000) + "\n\n... [truncated, file is " + content.length + " chars]", isError: false };
+        }
+        return { result: content, isError: false };
+      } catch (err) {
+        return { result: `Error reading file: ${(err as Error).message}`, isError: true };
+      }
+    }
+    case "list_files": {
+      const dirPath = String(args.path ?? ".");
+      const absDir = path.resolve(workspaceRoot, dirPath);
+      if (!absDir.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
+      console.log(`[tool] list_files: ${dirPath}`);
+      try {
+        const entries = await readdir(absDir, { withFileTypes: true });
+        const lines = entries
+          .filter((e) => !ignoredDirectories.has(e.name))
+          .map((e) => e.isDirectory() ? `${e.name}/` : e.name);
+        return { result: lines.join("\n") || "(empty directory)", isError: false };
+      } catch (err) {
+        return { result: `Error listing directory: ${(err as Error).message}`, isError: true };
+      }
+    }
+    case "write_file": {
+      const filePath = String(args.path ?? "");
+      const content = String(args.content ?? "");
+      if (!filePath) return { result: "Error: No path provided", isError: true };
+      const absPath = path.resolve(workspaceRoot, filePath);
+      if (!absPath.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
+      console.log(`[tool] write_file: ${filePath}`);
+      try {
+        // Ensure parent directory exists
+        await mkdir(path.dirname(absPath), { recursive: true });
+        await writeFile(absPath, content, "utf8");
+        return { result: `File written: ${filePath} (${content.length} chars)`, isError: false };
+      } catch (err) {
+        return { result: `Error writing file: ${(err as Error).message}`, isError: true };
+      }
+    }
+    default:
+      return { result: `Error: Unknown tool: ${name}`, isError: true };
+  }
+}
 
 /* ================================================================
    AI Completion — calls the selected provider
    ================================================================ */
 
 interface ChatMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
+  // Present on assistant messages that invoke tools
+  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+  // Present on tool result messages (role === "tool")
+  tool_call_id?: string;
+  name?: string;                   // tool name for tool-result messages
 }
 
 async function callAI(
@@ -818,10 +1112,13 @@ async function callAI(
 
   const model = resolveModel(config, uiModel);
 
-  // Build messages with system prompt and optional file context
-  const systemContent = fileContext
-    ? `${SYSTEM_PROMPT}\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``
-    : SYSTEM_PROMPT;
+  // Build messages with system prompt, workspace file tree, and optional file context
+  const basePrompt = getSystemPrompt();
+  const fileTree = await getWorkspaceFileTree();
+  let systemContent = basePrompt + fileTree;
+  if (fileContext) {
+    systemContent += `\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``;
+  }
 
   const chatMessages: ChatMessage[] = [
     { role: "system", content: systemContent },
@@ -955,7 +1252,7 @@ async function callAnthropic(
   const body = JSON.stringify({
     model,
     max_tokens: 16384,
-    system: systemMessage?.content ?? SYSTEM_PROMPT,
+    system: systemMessage?.content ?? getSystemPrompt(),
     messages: chatMessages
   });
 
@@ -1000,25 +1297,30 @@ interface UsageData {
   totalTokens: number;
 }
 
-/** Result from streaming AI calls, includes content and optional usage */
+/** Result from streaming AI calls, includes content, optional tool calls, and optional usage */
 interface StreamResult {
   content: string;
   usage?: UsageData;
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
 }
 
-/** Parse SSE lines from a readable stream, calling onToken for each content delta */
+/** Parse SSE lines from a readable stream, calling onToken for each content delta.
+ *  Also accumulates tool_calls from OpenAI-format deltas. */
 async function parseSSEStream(
   body: ReadableStream<Uint8Array>,
   extractDelta: (parsed: Record<string, unknown>) => string | null,
   onToken: TokenCallback,
   signal?: AbortSignal,
-  extractUsage?: (parsed: Record<string, unknown>) => UsageData | null
+  extractUsage?: (parsed: Record<string, unknown>) => UsageData | null,
+  extractToolCallDelta?: (parsed: Record<string, unknown>) => { index: number; id?: string; name?: string; arguments?: string } | null
 ): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullContent = "";
   let usage: UsageData | undefined;
+  // Accumulate tool calls by index
+  const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
 
   try {
     while (true) {
@@ -1046,6 +1348,22 @@ async function parseSSEStream(
           fullContent += delta;
           onToken(delta);
         }
+        // Accumulate tool call deltas
+        if (extractToolCallDelta) {
+          const tc = extractToolCallDelta(parsed);
+          if (tc) {
+            const existing = toolCallAccum.get(tc.index);
+            if (existing) {
+              if (tc.arguments) existing.arguments += tc.arguments;
+            } else {
+              toolCallAccum.set(tc.index, {
+                id: tc.id ?? `tool_${tc.index}`,
+                name: tc.name ?? "",
+                arguments: tc.arguments ?? ""
+              });
+            }
+          }
+        }
         // Try to extract usage data (typically in the final chunk)
         if (extractUsage) {
           const u = extractUsage(parsed);
@@ -1059,12 +1377,14 @@ async function parseSSEStream(
   } catch (err) {
     // If aborted, return what we have so far
     if (signal?.aborted) {
-      return { content: fullContent || "[Streaming aborted]", usage };
+      const toolCalls = toolCallAccum.size > 0 ? Array.from(toolCallAccum.values()) : undefined;
+      return { content: fullContent || "[Streaming aborted]", usage, toolCalls };
     }
     throw err;
   }
 
-  return { content: fullContent || "[No response from model]", usage };
+  const toolCalls = toolCallAccum.size > 0 ? Array.from(toolCallAccum.values()) : undefined;
+  return { content: fullContent || (toolCalls ? "" : "[No response from model]"), usage, toolCalls };
 }
 
 async function callOpenAICompatibleStream(
@@ -1089,11 +1409,18 @@ async function callOpenAICompatibleStream(
 
   const body = JSON.stringify({
     model,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    messages: messages.map((m) => {
+      const msg: Record<string, unknown> = { role: m.role, content: m.content };
+      if (m.tool_calls) msg.tool_calls = m.tool_calls;
+      if (m.tool_call_id) { msg.tool_call_id = m.tool_call_id; msg.name = m.name; }
+      return msg;
+    }),
     max_tokens: 16384,
     temperature: 0.3,
     stream: true,
-    stream_options: { include_usage: true }
+    stream_options: { include_usage: true },
+    tools: AI_TOOLS_OPENAI,
+    tool_choice: "auto"
   });
 
   console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
@@ -1127,6 +1454,15 @@ async function callOpenAICompatibleStream(
         };
       }
       return null;
+    },
+    // Extract tool call deltas from OpenAI streaming format
+    (parsed) => {
+      const choices = parsed.choices as Array<{
+        delta?: { tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> }
+      }> | undefined;
+      const tc = choices?.[0]?.delta?.tool_calls?.[0];
+      if (!tc) return null;
+      return { index: tc.index, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments };
     }
   );
 }
@@ -1158,12 +1494,24 @@ async function callCopilotStream(
     const input: Array<Record<string, unknown>> = [];
     for (const m of messages) {
       if (m.role === "system") {
-        // Reasoning models use "developer" role, others use "system"
         input.push({ role: isReasoning ? "developer" : "system", content: m.content });
       } else if (m.role === "user") {
         input.push({ role: "user", content: [{ type: "input_text", text: m.content }] });
       } else if (m.role === "assistant") {
-        input.push({ role: "assistant", content: [{ type: "output_text", text: m.content }] });
+        if (m.tool_calls && m.tool_calls.length > 0) {
+          // Assistant message with tool calls — emit function_call items
+          if (m.content) {
+            input.push({ role: "assistant", content: [{ type: "output_text", text: m.content }] });
+          }
+          for (const tc of m.tool_calls) {
+            input.push({ type: "function_call", call_id: tc.id, name: tc.function.name, arguments: tc.function.arguments });
+          }
+        } else {
+          input.push({ role: "assistant", content: [{ type: "output_text", text: m.content }] });
+        }
+      } else if (m.role === "tool") {
+        // Tool result — Responses API uses function_call_output
+        input.push({ type: "function_call_output", call_id: m.tool_call_id, output: m.content });
       }
     }
 
@@ -1172,6 +1520,7 @@ async function callCopilotStream(
       input,
       stream: true,
       max_output_tokens: 16384,
+      tools: AI_TOOLS_RESPONSES,
     };
 
     // Reasoning models: no temperature, add reasoning config
@@ -1198,13 +1547,33 @@ async function callCopilotStream(
       throw new Error("No response body for streaming");
     }
 
-    // Parse Responses API SSE stream — extract text deltas
+    // Parse Responses API SSE stream — extract text deltas and function calls
+    // Responses API accumulates function calls differently — we track them via output_index
+    const responsesToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+
     return parseSSEStream(
       response.body,
       (parsed) => {
         const type = parsed.type as string | undefined;
         if (type === "response.output_text.delta") {
           return (parsed.delta as string) ?? null;
+        }
+        // Track function call starts
+        if (type === "response.function_call_arguments.delta") {
+          const outputIndex = parsed.output_index as number ?? 0;
+          const existing = responsesToolCalls.get(outputIndex);
+          if (existing) {
+            existing.arguments += (parsed.delta as string) ?? "";
+          }
+          return null;
+        }
+        if (type === "response.output_item.added") {
+          const item = parsed.item as { type?: string; call_id?: string; name?: string } | undefined;
+          if (item?.type === "function_call" && item.call_id) {
+            const outputIndex = parsed.output_index as number ?? 0;
+            responsesToolCalls.set(outputIndex, { id: item.call_id, name: item.name ?? "", arguments: "" });
+          }
+          return null;
         }
         if (type === "error") {
           const errMsg = (parsed.message as string) ?? "Unknown error";
@@ -1230,17 +1599,30 @@ async function callCopilotStream(
         }
         return null;
       }
-    );
+    ).then((result) => {
+      // Merge Responses API function calls into the result
+      if (responsesToolCalls.size > 0) {
+        result.toolCalls = [...(result.toolCalls ?? []), ...Array.from(responsesToolCalls.values())];
+      }
+      return result;
+    });
   } else {
     // --- Chat Completions API for non-GPT-5 models ---
     const url = `${config.baseUrl}/chat/completions`;
 
     const bodyObj: Record<string, unknown> = {
       model,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => {
+        const msg: Record<string, unknown> = { role: m.role, content: m.content };
+        if (m.tool_calls) msg.tool_calls = m.tool_calls;
+        if (m.tool_call_id) { msg.tool_call_id = m.tool_call_id; msg.name = m.name; }
+        return msg;
+      }),
       max_tokens: 16384,
       stream: true,
       stream_options: { include_usage: true },
+      tools: AI_TOOLS_OPENAI,
+      tool_choice: "auto",
     };
 
     // Reasoning models (o1, o3, o4): no temperature
@@ -1287,6 +1669,15 @@ async function callCopilotStream(
           };
         }
         return null;
+      },
+      // Extract tool call deltas
+      (parsed) => {
+        const choices = parsed.choices as Array<{
+          delta?: { tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> }
+        }> | undefined;
+        const tc = choices?.[0]?.delta?.tool_calls?.[0];
+        if (!tc) return null;
+        return { index: tc.index, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments };
       }
     );
   }
@@ -1303,9 +1694,28 @@ async function callAnthropicStream(
   const url = `${config.baseUrl}/messages`;
 
   const systemMessage = messages.find((m) => m.role === "system");
-  const chatMessages = messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+  // Build Anthropic-format messages — handle tool_use and tool_result content blocks
+  const chatMessages: Array<Record<string, unknown>> = [];
+  for (const m of messages) {
+    if (m.role === "system") continue;
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      // Assistant message with tool calls — Anthropic uses content blocks
+      const content: Array<Record<string, unknown>> = [];
+      if (m.content) content.push({ type: "text", text: m.content });
+      for (const tc of m.tool_calls) {
+        let inputObj: unknown;
+        try { inputObj = JSON.parse(tc.function.arguments); } catch { inputObj = {}; }
+        content.push({ type: "tool_use", id: tc.id, name: tc.function.name, input: inputObj });
+      }
+      chatMessages.push({ role: "assistant", content });
+    } else if (m.role === "tool") {
+      // Tool result — Anthropic uses tool_result content blocks in a "user" message
+      chatMessages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: m.content }] });
+    } else {
+      chatMessages.push({ role: m.role as "user" | "assistant", content: m.content });
+    }
+  }
 
   if (chatMessages.length > 0 && chatMessages[0].role !== "user") {
     chatMessages.unshift({ role: "user", content: "(start)" });
@@ -1314,9 +1724,11 @@ async function callAnthropicStream(
   const body = JSON.stringify({
     model,
     max_tokens: 16384,
-    system: systemMessage?.content ?? SYSTEM_PROMPT,
+    system: systemMessage?.content ?? getSystemPrompt(),
     messages: chatMessages,
-    stream: true
+    stream: true,
+    tools: AI_TOOLS_ANTHROPIC,
+    tool_choice: { type: "auto" }
   });
 
   console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
@@ -1340,14 +1752,17 @@ async function callAnthropicStream(
     throw new Error("No response body for streaming");
   }
 
-  // Anthropic SSE format: event: content_block_delta + data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
-  // Usage: message_start has usage.input_tokens, message_delta has usage.output_tokens
+  // Anthropic SSE format: content_block_start/delta/stop for text and tool_use blocks
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullContent = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  // Track tool_use blocks by index
+  const toolBlocks = new Map<number, { id: string; name: string; arguments: string }>();
+  let currentBlockIndex = -1;
+  let currentBlockType = "";
 
   try {
   while (true) {
@@ -1369,27 +1784,45 @@ async function callAnthropicStream(
       if (payload === "[DONE]") continue;
 
       try {
-        const parsed = JSON.parse(payload) as {
-          type?: string;
-          delta?: { type?: string; text?: string };
-          message?: { usage?: { input_tokens?: number } };
-          usage?: { output_tokens?: number };
-          error?: { message?: string };
-        };
-        if (parsed.error) {
-          throw new Error(parsed.error.message ?? "Anthropic streaming error");
+        const parsed = JSON.parse(payload) as Record<string, unknown>;
+        const type = parsed.type as string | undefined;
+        const error = parsed.error as { message?: string } | undefined;
+        if (error) {
+          throw new Error(error.message ?? "Anthropic streaming error");
         }
-        if (parsed.type === "content_block_delta" && parsed.delta?.text) {
-          fullContent += parsed.delta.text;
-          onToken(parsed.delta.text);
+
+        // content_block_start — track block type
+        if (type === "content_block_start") {
+          const idx = parsed.index as number ?? 0;
+          const block = parsed.content_block as { type?: string; id?: string; name?: string } | undefined;
+          currentBlockIndex = idx;
+          currentBlockType = block?.type ?? "";
+          if (currentBlockType === "tool_use" && block?.id) {
+            toolBlocks.set(idx, { id: block.id, name: block.name ?? "", arguments: "" });
+          }
+        }
+        // content_block_delta — text or tool input JSON
+        if (type === "content_block_delta") {
+          const delta = parsed.delta as { type?: string; text?: string; partial_json?: string } | undefined;
+          if (delta?.type === "text_delta" && delta.text) {
+            fullContent += delta.text;
+            onToken(delta.text);
+          }
+          if (delta?.type === "input_json_delta" && delta.partial_json) {
+            const idx = parsed.index as number ?? currentBlockIndex;
+            const block = toolBlocks.get(idx);
+            if (block) block.arguments += delta.partial_json;
+          }
         }
         // Capture input tokens from message_start
-        if (parsed.type === "message_start" && parsed.message?.usage?.input_tokens) {
-          inputTokens = parsed.message.usage.input_tokens;
+        if (type === "message_start") {
+          const msg = parsed.message as { usage?: { input_tokens?: number } } | undefined;
+          if (msg?.usage?.input_tokens) inputTokens = msg.usage.input_tokens;
         }
         // Capture output tokens from message_delta
-        if (parsed.type === "message_delta" && parsed.usage?.output_tokens) {
-          outputTokens = parsed.usage.output_tokens;
+        if (type === "message_delta") {
+          const usage = parsed.usage as { output_tokens?: number } | undefined;
+          if (usage?.output_tokens) outputTokens = usage.output_tokens;
         }
       } catch (e) {
         if (e instanceof Error && e.message.includes("streaming error")) throw e;
@@ -1400,23 +1833,37 @@ async function callAnthropicStream(
   } catch (err) {
     if (signal?.aborted) {
       const usage = inputTokens > 0 ? { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens } : undefined;
-      return { content: fullContent || "[Streaming aborted]", usage };
+      const toolCalls = toolBlocks.size > 0 ? Array.from(toolBlocks.values()) : undefined;
+      return { content: fullContent || "[Streaming aborted]", usage, toolCalls };
     }
     throw err;
   }
 
   const usage = inputTokens > 0 ? { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens } : undefined;
-  return { content: fullContent || "[No response from model]", usage };
+  const toolCalls = toolBlocks.size > 0 ? Array.from(toolBlocks.values()) : undefined;
+  return { content: fullContent || (toolCalls ? "" : "[No response from model]"), usage, toolCalls };
 }
 
-/** Streaming version of callAI — invokes onToken for each chunk, returns full content and usage */
+/** Callback for tool-related SSE events */
+type ToolEventCallback = (event: {
+  type: "tool_call" | "tool_result";
+  toolCallId: string;
+  toolName: string;
+  arguments?: string;
+  result?: string;
+  isError?: boolean;
+}) => void;
+
+/** Streaming version of callAI — invokes onToken for each chunk, supports tool execution loop.
+ *  When the AI returns tool calls, it executes them and sends results back for another round. */
 async function callAIStream(
   providerLabel: string,
   uiModel: string,
   messages: ChatMessage[],
   onToken: TokenCallback,
   fileContext?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onToolEvent?: ToolEventCallback
 ): Promise<StreamResult> {
   const config = resolveProvider(providerLabel);
   if (!config) {
@@ -1434,38 +1881,109 @@ async function callAIStream(
 
   const model = resolveModel(config, uiModel);
 
-  const systemContent = fileContext
-    ? `${SYSTEM_PROMPT}\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``
-    : SYSTEM_PROMPT;
+  // Build messages with system prompt, workspace file tree, and optional file context
+  const basePrompt = getSystemPrompt();
+  const fileTree = await getWorkspaceFileTree();
+  let systemContent = basePrompt + fileTree;
+  if (fileContext) {
+    systemContent += `\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``;
+  }
 
   const chatMessages: ChatMessage[] = [
     { role: "system", content: systemContent },
     ...messages
   ];
 
-  try {
-    let result: StreamResult;
-    if (config.format === "anthropic") {
-      result = await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
-    } else if (config.format === "copilot") {
-      result = await callCopilotStream(config, apiKey, model, chatMessages, onToken, signal);
-    } else {
-      result = await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
-    }
-    // Track local usage for this provider
-    trackLocalUsage(config.id, result.usage);
-    return result;
-  } catch (error) {
-    if (signal?.aborted) {
-      return { content: "[Streaming aborted]" };
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[ai-stream] ${config.label} error:`, message);
+  // Tool execution loop — up to 15 rounds of tool calls
+  const MAX_TOOL_ROUNDS = 15;
+  let allContent = "";
+  let lastUsage: UsageData | undefined;
+  const allToolCalls: Array<{ id: string; name: string; arguments: string }> = [];
 
-    const errMsg = `[Error] ${config.label} API call failed: ${message}`;
-    onToken(errMsg);
-    return { content: errMsg };
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    try {
+      let result: StreamResult;
+      if (config.format === "anthropic") {
+        result = await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
+      } else if (config.format === "copilot") {
+        result = await callCopilotStream(config, apiKey, model, chatMessages, onToken, signal);
+      } else {
+        result = await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
+      }
+
+      trackLocalUsage(config.id, result.usage);
+      allContent += result.content;
+      if (result.usage) {
+        if (lastUsage) {
+          lastUsage.inputTokens += result.usage.inputTokens;
+          lastUsage.outputTokens += result.usage.outputTokens;
+          lastUsage.totalTokens += result.usage.totalTokens;
+        } else {
+          lastUsage = { ...result.usage };
+        }
+      }
+
+      // If no tool calls, we're done
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined };
+      }
+
+      // Process tool calls
+      console.log(`[ai-stream] Round ${round + 1}: AI returned ${result.toolCalls.length} tool call(s)`);
+
+      // Add the assistant message with tool calls to conversation
+      const assistantToolCalls = result.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function" as const,
+        function: { name: tc.name, arguments: tc.arguments }
+      }));
+      chatMessages.push({
+        role: "assistant",
+        content: result.content,
+        tool_calls: assistantToolCalls
+      });
+
+      // Execute each tool call and append results
+      for (const tc of result.toolCalls) {
+        allToolCalls.push(tc);
+
+        // Notify client that a tool call is starting
+        if (onToolEvent) {
+          onToolEvent({ type: "tool_call", toolCallId: tc.id, toolName: tc.name, arguments: tc.arguments });
+        }
+
+        const toolResult = await executeTool(tc.name, tc.arguments);
+
+        // Notify client of the tool result
+        if (onToolEvent) {
+          onToolEvent({ type: "tool_result", toolCallId: tc.id, toolName: tc.name, result: toolResult.result, isError: toolResult.isError });
+        }
+
+        // Add tool result to conversation for the next AI round
+        chatMessages.push({
+          role: "tool",
+          content: toolResult.result,
+          tool_call_id: tc.id,
+          name: tc.name
+        });
+      }
+
+      // Continue to next round — AI will see the tool results and continue
+    } catch (error) {
+      if (signal?.aborted) {
+        return { content: allContent || "[Streaming aborted]", usage: lastUsage };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ai-stream] ${config.label} error (round ${round + 1}):`, message);
+      const errMsg = `[Error] ${config.label} API call failed: ${message}`;
+      onToken(errMsg);
+      return { content: allContent + errMsg, usage: lastUsage };
+    }
   }
+
+  // If we hit max rounds, return what we have
+  console.warn(`[ai-stream] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
+  return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined };
 }
 
 /* ================================================================
@@ -1528,7 +2046,7 @@ function languageFromExtension(extension: string) {
   }
 }
 
-function toSummary(session: SessionDetail): SessionSummary {
+function toSummary(session: StoredSession): SessionSummary {
   return {
     id: session.id,
     title: session.title,
@@ -1545,12 +2063,26 @@ function getRecentRuns() {
     .slice(0, 8);
 }
 
-function attachMessage(session: SessionDetail, role: "user" | "assistant" | "system", content: string) {
+function attachMessage(
+  session: StoredSession,
+  role: "user" | "assistant" | "system" | "tool",
+  content: string,
+  extra?: {
+    toolCalls?: ToolCall[];
+    toolCallId?: string;
+    toolName?: string;
+    isError?: boolean;
+  }
+) {
   session.messages.push({
     id: randomUUID(),
     role,
     content,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
+    ...(extra?.toolCallId ? { toolCallId: extra.toolCallId } : {}),
+    ...(extra?.toolName ? { toolName: extra.toolName } : {}),
+    ...(extra?.isError !== undefined ? { isError: extra.isError } : {})
   });
   session.updatedAt = new Date().toISOString();
 }
@@ -1558,6 +2090,7 @@ function attachMessage(session: SessionDetail, role: "user" | "assistant" | "sys
 async function buildWorkspaceSnapshot() {
   const files = await collectFiles(workspaceRoot);
   const sessions = Array.from(sessionStore.values())
+    .filter((s) => s.workspace === workspaceRoot)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .map(toSummary);
 
@@ -1572,7 +2105,7 @@ async function buildWorkspaceSnapshot() {
   return workspaceSnapshotSchema.parse({
     workspace: {
       id: "alpha-code",
-      name: APP_NAME,
+      name: path.basename(workspaceRoot),
       root: workspaceRoot,
       branch,
       files
@@ -1667,6 +2200,7 @@ async function runCommand(command: string, sessionId?: string) {
           `Command ${run.status}: ${command}${typeof code === "number" ? ` (exit ${code})` : ""}`
         );
         sessionStore.set(session.id, { ...session });
+        persistSessions();
       }
     }
   });
@@ -1767,11 +2301,160 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    /* ---- Workspace / project management ---- */
+
+    if (request.method === "GET" && request.url === "/api/workspace") {
+      sendJson(response, 200, {
+        root: workspaceRoot,
+        name: path.basename(workspaceRoot),
+      });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/workspace/recent") {
+      sendJson(response, 200, { projects: recentProjects });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/workspace/switch") {
+      const payload = await readJsonBody(request);
+      const targetPath = typeof payload.path === "string" ? (payload.path as string).trim() : "";
+      if (!targetPath) {
+        sendJson(response, 400, { error: "Missing 'path' field" });
+        return;
+      }
+      const resolved = path.resolve(targetPath);
+      try {
+        const s = await stat(resolved);
+        if (!s.isDirectory()) {
+          sendJson(response, 400, { error: "Path is not a directory" });
+          return;
+        }
+      } catch {
+        sendJson(response, 400, { error: "Path does not exist" });
+        return;
+      }
+      workspaceRoot = resolved;
+      touchProject(resolved);
+      console.log(`[workspace] Switched to ${resolved}`);
+      sendJson(response, 200, {
+        root: workspaceRoot,
+        name: path.basename(workspaceRoot),
+      });
+      return;
+    }
+
+    /* ---- Git branch management ---- */
+
+    if (request.method === "GET" && request.url === "/api/git/branches") {
+      try {
+        const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+
+        // Local branches
+        const localRaw = execSync("git branch --format='%(refname:short)'", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        const localBranches = localRaw ? localRaw.split("\n").map((b) => b.trim()).filter(Boolean) : [];
+
+        // Remote branches (strip "origin/" prefix, deduplicate with local)
+        let remoteBranches: string[] = [];
+        try {
+          const remoteRaw = execSync("git branch -r --format='%(refname:short)'", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+          remoteBranches = remoteRaw
+            ? remoteRaw.split("\n")
+                .map((b) => b.trim())
+                .filter((b) => b && !b.includes("HEAD"))
+                .map((b) => b.replace(/^origin\//, ""))
+                .filter((b) => !localBranches.includes(b))
+            : [];
+        } catch { /* no remotes */ }
+
+        // Check for uncommitted changes
+        const statusRaw = execSync("git status --porcelain", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        const hasUncommittedChanges = statusRaw.length > 0;
+
+        sendJson(response, 200, {
+          current: currentBranch,
+          local: localBranches,
+          remote: remoteBranches,
+          hasUncommittedChanges,
+        });
+      } catch (err) {
+        sendJson(response, 500, { error: "Not a git repository or git not available" });
+      }
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/git/checkout") {
+      try {
+        const body = await readJsonBody(request) as { branch: string };
+        if (!body.branch || typeof body.branch !== "string") {
+          sendJson(response, 400, { error: "Missing branch name" });
+          return;
+        }
+        const safeBranch = body.branch.replace(/[^a-zA-Z0-9._\-\/]/g, "");
+        if (!safeBranch) {
+          sendJson(response, 400, { error: "Invalid branch name" });
+          return;
+        }
+
+        // Check if it's a local branch
+        const localRaw = execSync("git branch --format='%(refname:short)'", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        const localBranches = localRaw ? localRaw.split("\n").map((b) => b.trim()) : [];
+
+        let output: string;
+        if (localBranches.includes(safeBranch)) {
+          output = execSync(`git checkout "${safeBranch}"`, { cwd: workspaceRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+        } else {
+          // Try checking out remote branch as tracking branch
+          output = execSync(`git checkout -b "${safeBranch}" "origin/${safeBranch}"`, { cwd: workspaceRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
+        }
+
+        const newBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        sendJson(response, 200, { branch: newBranch, output });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        sendJson(response, 400, { error: `Checkout failed: ${message}` });
+      }
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/git/branch") {
+      try {
+        const body = await readJsonBody(request) as { name: string; checkout?: boolean; from?: string };
+        if (!body.name || typeof body.name !== "string") {
+          sendJson(response, 400, { error: "Missing branch name" });
+          return;
+        }
+        const safeName = body.name.replace(/[^a-zA-Z0-9._\-\/]/g, "");
+        if (!safeName) {
+          sendJson(response, 400, { error: "Invalid branch name" });
+          return;
+        }
+
+        const fromRef = body.from ? body.from.replace(/[^a-zA-Z0-9._\-\/]/g, "") : "";
+        const createCmd = fromRef
+          ? `git branch "${safeName}" "${fromRef}"`
+          : `git branch "${safeName}"`;
+
+        execSync(createCmd, { cwd: workspaceRoot, encoding: "utf8" });
+
+        if (body.checkout !== false) {
+          execSync(`git checkout "${safeName}"`, { cwd: workspaceRoot, encoding: "utf8" });
+        }
+
+        const newBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        sendJson(response, 201, { branch: newBranch, created: safeName });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        sendJson(response, 400, { error: `Branch creation failed: ${message}` });
+      }
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/sessions") {
       const payload = createSessionSchema.parse(await readJsonBody(request));
       const now = new Date().toISOString();
       const id = randomUUID();
-      const session: SessionDetail = {
+      const session: StoredSession = {
         id,
         title: payload.prompt.slice(0, 72),
         status: "running",
@@ -1780,11 +2463,13 @@ const server = createServer(async (request, response) => {
         activeFilePath: payload.filePath,
         updatedAt: now,
         messages: [],
-        commandRuns: []
+        commandRuns: [],
+        workspace: workspaceRoot
       };
 
       attachMessage(session, "user", payload.prompt);
       sessionStore.set(id, session);
+      persistSessions();
 
       // Send immediate response with user message, then stream AI in background
       const fileContext = await readFileContext(payload.filePath);
@@ -1797,21 +2482,66 @@ const server = createServer(async (request, response) => {
       const abortController = new AbortController();
       activeAbortControllers.set(id, abortController);
 
+      // Track tool calls and results to store them in session after completion
+      const pendingToolMessages: Array<{
+        role: "assistant" | "tool";
+        content: string;
+        extra?: Parameters<typeof attachMessage>[3];
+      }> = [];
+
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext, abortController.signal).then((result) => {
+      }, fileContext, abortController.signal, (toolEvent) => {
+        // Forward tool events to SSE stream
+        emitter.emit(toolEvent.type, { messageId, ...toolEvent });
+        // Accumulate tool messages for session persistence
+        if (toolEvent.type === "tool_call") {
+          // Store the assistant message that requested this tool call
+          pendingToolMessages.push({
+            role: "assistant",
+            content: "",
+            extra: {
+              toolCalls: [{
+                id: toolEvent.toolCallId,
+                name: toolEvent.toolName,
+                arguments: toolEvent.arguments || "{}"
+              }]
+            }
+          });
+        } else if (toolEvent.type === "tool_result") {
+          pendingToolMessages.push({
+            role: "tool",
+            content: toolEvent.result || "",
+            extra: {
+              toolCallId: toolEvent.toolCallId,
+              toolName: toolEvent.toolName,
+              isError: toolEvent.isError
+            }
+          });
+        }
+      }).then((result) => {
         activeAbortControllers.delete(id);
+        // Store intermediate tool messages into the session
+        for (const tm of pendingToolMessages) {
+          attachMessage(session, tm.role, tm.content, tm.extra);
+        }
         attachMessage(session, "assistant", result.content);
         session.status = "idle";
         sessionStore.set(id, { ...session });
+        persistSessions();
         emitter.emit("done", { messageId, usage: result.usage });
         console.log(`[ai-stream] Session ${id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(id);
+        // Still store any tool messages that happened before the error
+        for (const tm of pendingToolMessages) {
+          attachMessage(session, tm.role, tm.content, tm.extra);
+        }
         const message = error instanceof Error ? error.message : String(error);
         attachMessage(session, "assistant", `[Error] AI call failed: ${message}`);
         session.status = "review";
         sessionStore.set(id, { ...session });
+        persistSessions();
         emitter.emit("error", { messageId, error: message });
       });
 
@@ -1833,11 +2563,26 @@ const server = createServer(async (request, response) => {
       session.status = "running";
       attachMessage(session, "user", payload.prompt);
       sessionStore.set(session.id, { ...session });
+      persistSessions();
 
-      // Build conversation history for context
+      // Build conversation history for context — include tool messages for full context
       const conversationMessages: ChatMessage[] = session.messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+        .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool")
+        .map((m) => {
+          const msg: ChatMessage = { role: m.role as "user" | "assistant" | "tool", content: m.content };
+          if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+            msg.tool_calls = m.toolCalls.map((tc) => ({
+              id: tc.id,
+              type: "function" as const,
+              function: { name: tc.name, arguments: tc.arguments }
+            }));
+          }
+          if (m.role === "tool" && m.toolCallId) {
+            msg.tool_call_id = m.toolCallId;
+            msg.name = m.toolName;
+          }
+          return msg;
+        });
 
       const fileContext = await readFileContext(payload.filePath);
       const emitter = getSessionEmitter(session.id);
@@ -1847,22 +2592,66 @@ const server = createServer(async (request, response) => {
       const abortController = new AbortController();
       activeAbortControllers.set(session.id, abortController);
 
+      // Track tool calls and results to store them in session after completion
+      const pendingToolMessages: Array<{
+        role: "assistant" | "tool";
+        content: string;
+        extra?: Parameters<typeof attachMessage>[3];
+      }> = [];
+
       // Streaming AI call
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext, abortController.signal).then((result) => {
+      }, fileContext, abortController.signal, (toolEvent) => {
+        // Forward tool events to SSE stream
+        emitter.emit(toolEvent.type, { messageId, ...toolEvent });
+        // Accumulate tool messages for session persistence
+        if (toolEvent.type === "tool_call") {
+          pendingToolMessages.push({
+            role: "assistant",
+            content: "",
+            extra: {
+              toolCalls: [{
+                id: toolEvent.toolCallId,
+                name: toolEvent.toolName,
+                arguments: toolEvent.arguments || "{}"
+              }]
+            }
+          });
+        } else if (toolEvent.type === "tool_result") {
+          pendingToolMessages.push({
+            role: "tool",
+            content: toolEvent.result || "",
+            extra: {
+              toolCallId: toolEvent.toolCallId,
+              toolName: toolEvent.toolName,
+              isError: toolEvent.isError
+            }
+          });
+        }
+      }).then((result) => {
         activeAbortControllers.delete(session.id);
+        // Store intermediate tool messages into the session
+        for (const tm of pendingToolMessages) {
+          attachMessage(session, tm.role, tm.content, tm.extra);
+        }
         attachMessage(session, "assistant", result.content);
         session.status = "idle";
         sessionStore.set(session.id, { ...session });
+        persistSessions();
         emitter.emit("done", { messageId, usage: result.usage });
         console.log(`[ai-stream] Session ${session.id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(session.id);
+        // Still store any tool messages that happened before the error
+        for (const tm of pendingToolMessages) {
+          attachMessage(session, tm.role, tm.content, tm.extra);
+        }
         const message = error instanceof Error ? error.message : String(error);
         attachMessage(session, "assistant", `[Error] AI call failed: ${message}`);
         session.status = "review";
         sessionStore.set(session.id, { ...session });
+        persistSessions();
         emitter.emit("error", { messageId, error: message });
       });
 
@@ -1879,6 +2668,7 @@ const server = createServer(async (request, response) => {
         if (index !== -1) {
           session.messages.splice(index, 1);
           sessionStore.set(session.id, { ...session });
+          persistSessions();
           found = true;
           break;
         }
@@ -1919,16 +2709,26 @@ const server = createServer(async (request, response) => {
       const onError = (payload: { messageId: string; error: string }) => {
         response.write(`data: ${JSON.stringify({ type: "error", messageId: payload.messageId, error: payload.error })}\n\n`);
       };
+      const onToolCall = (payload: { messageId: string; toolCallId: string; toolName: string; arguments?: string }) => {
+        response.write(`data: ${JSON.stringify({ type: "tool_call", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, arguments: payload.arguments })}\n\n`);
+      };
+      const onToolResult = (payload: { messageId: string; toolCallId: string; toolName: string; result?: string; isError?: boolean }) => {
+        response.write(`data: ${JSON.stringify({ type: "tool_result", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, result: payload.result, isError: payload.isError })}\n\n`);
+      };
 
       emitter.on("token", onToken);
       emitter.on("done", onDone);
       emitter.on("error", onError);
+      emitter.on("tool_call", onToolCall);
+      emitter.on("tool_result", onToolResult);
 
       // Cleanup when client disconnects
       request.on("close", () => {
         emitter.off("token", onToken);
         emitter.off("done", onDone);
         emitter.off("error", onError);
+        emitter.off("tool_call", onToolCall);
+        emitter.off("tool_result", onToolResult);
         // Clean up emitter if no listeners remain
         if (emitter.listenerCount("token") === 0) {
           sessionEmitters.delete(sessionId);
@@ -1954,6 +2754,7 @@ const server = createServer(async (request, response) => {
       if (session) {
         session.status = "idle";
         sessionStore.set(sessionId, { ...session });
+        persistSessions();
       }
       sendJson(response, 200, { ok: true, aborted: !!controller });
       return;
@@ -1983,6 +2784,7 @@ const server = createServer(async (request, response) => {
         activeAbortControllers.delete(sessionId);
       }
       const existed = sessionStore.delete(sessionId);
+      persistSessions();
       // Also clean up any SSE emitter
       sessionEmitters.delete(sessionId);
       sendJson(response, 200, { ok: true, deleted: existed });
@@ -2053,6 +2855,7 @@ const server = createServer(async (request, response) => {
           session.commandRuns = [run, ...session.commandRuns.filter((item) => item.id !== run.id)].slice(0, 12);
           attachMessage(session, "system", `Running command: ${payload.command}`);
           sessionStore.set(session.id, { ...session });
+          persistSessions();
         }
       }
       sendJson(response, 201, run);
@@ -2282,6 +3085,13 @@ function startTerminalServer(): void {
 async function startServer(): Promise<void> {
   // Load persisted auth tokens from disk (GitHub OAuth, manual API keys)
   await loadPersistedAuth();
+
+  // Load persisted sessions from disk
+  await loadPersistedSessions();
+
+  // Load recent projects list and mark the current workspace as active
+  await loadPersistedProjects();
+  touchProject(workspaceRoot);
 
   // Start WebSocket PTY terminal server
   startTerminalServer();
