@@ -426,6 +426,179 @@ function getProviderStatus(config: ProviderConfig): "connected" | "disconnected"
 }
 
 /* ================================================================
+   Provider Usage / Quota Tracking
+   ================================================================ */
+
+/** Provider usage info returned to clients */
+interface ProviderUsageInfo {
+  providerId: string;
+  /** Usage as a percentage (0-100). null if unknown. */
+  usagePercent: number | null;
+  /** Human-readable usage label, e.g. "42 / 300 premium requests" */
+  usageLabel: string;
+  /** Detailed breakdown for hover tooltip */
+  details: string;
+  /** Whether this provider has real quota data (vs local tracking only) */
+  hasQuota: boolean;
+}
+
+/** Cached Copilot rate limit data from API response headers */
+let copilotRateLimitCache: {
+  limit?: number;       // x-ratelimit-limit (monthly premium request limit)
+  remaining?: number;   // x-ratelimit-remaining
+  used?: number;        // x-ratelimit-used
+  reset?: string;       // x-ratelimit-reset timestamp
+  updatedAt: number;
+} = { updatedAt: 0 };
+
+/** Cumulative token usage tracked locally per provider (for providers without usage APIs) */
+const localUsageTracker = new Map<string, { inputTokens: number; outputTokens: number; requestCount: number }>();
+
+function trackLocalUsage(providerId: string, usage?: UsageData) {
+  const existing = localUsageTracker.get(providerId) ?? { inputTokens: 0, outputTokens: 0, requestCount: 0 };
+  existing.requestCount += 1;
+  if (usage) {
+    existing.inputTokens += usage.inputTokens;
+    existing.outputTokens += usage.outputTokens;
+  }
+  localUsageTracker.set(providerId, existing);
+}
+
+/** Capture rate limit headers from a Copilot API response */
+function captureCopilotRateLimits(headers: Headers) {
+  const limit = headers.get("x-ratelimit-limit");
+  const remaining = headers.get("x-ratelimit-remaining");
+  const used = headers.get("x-ratelimit-used");
+  const reset = headers.get("x-ratelimit-reset");
+  if (limit || remaining || used) {
+    copilotRateLimitCache = {
+      limit: limit ? parseInt(limit, 10) : copilotRateLimitCache.limit,
+      remaining: remaining ? parseInt(remaining, 10) : copilotRateLimitCache.remaining,
+      used: used ? parseInt(used, 10) : copilotRateLimitCache.used,
+      reset: reset ?? copilotRateLimitCache.reset,
+      updatedAt: Date.now(),
+    };
+    console.log(`[copilot-ratelimit] limit=${copilotRateLimitCache.limit} used=${copilotRateLimitCache.used} remaining=${copilotRateLimitCache.remaining}`);
+  }
+}
+
+/** Fetch OpenRouter key usage data */
+async function fetchOpenRouterUsage(): Promise<ProviderUsageInfo> {
+  const apiKey = await getKeyForProviderAsync("openrouter");
+  if (!apiKey) {
+    return { providerId: "openrouter", usagePercent: null, usageLabel: "No API key", details: "Set an API key in Settings", hasQuota: false };
+  }
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/key", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json() as {
+      data: {
+        label: string;
+        limit: number | null;
+        limit_remaining: number | null;
+        usage: number;
+        usage_monthly: number;
+        is_free_tier: boolean;
+      };
+    };
+    const d = data.data;
+    const hasLimit = d.limit !== null && d.limit > 0;
+    const usagePercent = hasLimit ? Math.min(((d.usage / d.limit!) * 100), 100) : null;
+    const usageLabel = hasLimit
+      ? `$${d.usage.toFixed(2)} / $${d.limit!.toFixed(2)}`
+      : `$${d.usage.toFixed(2)} used`;
+    const details = [
+      `Total: $${d.usage.toFixed(4)}`,
+      `Monthly: $${d.usage_monthly.toFixed(4)}`,
+      hasLimit ? `Limit: $${d.limit!.toFixed(2)}` : "No limit set",
+      hasLimit ? `Remaining: $${d.limit_remaining!.toFixed(2)}` : "",
+      d.is_free_tier ? "Free tier" : "Paid account",
+    ].filter(Boolean).join("\n");
+
+    return { providerId: "openrouter", usagePercent, usageLabel, details, hasQuota: hasLimit };
+  } catch (err) {
+    console.error("[provider-usage] OpenRouter fetch failed:", err);
+    return { providerId: "openrouter", usagePercent: null, usageLabel: "Error fetching", details: "Failed to fetch usage", hasQuota: false };
+  }
+}
+
+/** Get Copilot usage from cached rate limit headers */
+function getCopilotUsage(): ProviderUsageInfo {
+  const local = localUsageTracker.get("copilot");
+  const rl = copilotRateLimitCache;
+
+  if (rl.limit && rl.limit > 0 && rl.used !== undefined) {
+    const usagePercent = Math.min((rl.used / rl.limit) * 100, 100);
+    const usageLabel = `${rl.used} / ${rl.limit} premium requests`;
+    const details = [
+      `Premium requests used: ${rl.used}`,
+      `Limit: ${rl.limit}`,
+      `Remaining: ${rl.remaining ?? "?"}`,
+      rl.reset ? `Resets: ${new Date(parseInt(rl.reset, 10) * 1000).toLocaleDateString()}` : "",
+      local ? `Session: ${local.requestCount} requests, ${(local.inputTokens + local.outputTokens).toLocaleString()} tokens` : "",
+    ].filter(Boolean).join("\n");
+
+    return { providerId: "copilot", usagePercent, usageLabel, details, hasQuota: true };
+  }
+
+  // No rate limit data yet — fall back to local tracking
+  if (local) {
+    return {
+      providerId: "copilot",
+      usagePercent: null,
+      usageLabel: `${local.requestCount} requests`,
+      details: `Requests: ${local.requestCount}\nTokens: ${(local.inputTokens + local.outputTokens).toLocaleString()}\n(Premium quota data available after first API call)`,
+      hasQuota: false,
+    };
+  }
+
+  return { providerId: "copilot", usagePercent: null, usageLabel: "No usage yet", details: "Make a request to see usage", hasQuota: false };
+}
+
+/** Get local-only usage for OpenAI / Anthropic (no public usage API) */
+function getLocalUsage(providerId: string): ProviderUsageInfo {
+  const local = localUsageTracker.get(providerId);
+  if (local) {
+    const totalTokens = local.inputTokens + local.outputTokens;
+    return {
+      providerId,
+      usagePercent: null,
+      usageLabel: `${local.requestCount} requests`,
+      details: `Requests: ${local.requestCount}\nInput tokens: ${local.inputTokens.toLocaleString()}\nOutput tokens: ${local.outputTokens.toLocaleString()}\nTotal tokens: ${totalTokens.toLocaleString()}`,
+      hasQuota: false,
+    };
+  }
+  return { providerId, usagePercent: null, usageLabel: "No usage yet", details: "Make a request to see usage", hasQuota: false };
+}
+
+/** Fetch usage for all providers */
+async function getAllProviderUsage(): Promise<ProviderUsageInfo[]> {
+  const results: ProviderUsageInfo[] = [];
+
+  // Copilot — from rate limit headers cache
+  results.push(getCopilotUsage());
+
+  // OpenRouter — live API call
+  const orKey = await getKeyForProviderAsync("openrouter");
+  if (orKey) {
+    results.push(await fetchOpenRouterUsage());
+  } else {
+    results.push({ providerId: "openrouter", usagePercent: null, usageLabel: "No API key", details: "Set an API key in Settings", hasQuota: false });
+  }
+
+  // OpenAI — local tracking only
+  results.push(getLocalUsage("openai"));
+
+  // Anthropic — local tracking only
+  results.push(getLocalUsage("anthropic"));
+
+  return results;
+}
+
+/* ================================================================
    Dynamic Model Fetching — queries each provider's API for available models
    ================================================================ */
 
@@ -820,17 +993,32 @@ async function callAnthropic(
 
 type TokenCallback = (token: string) => void;
 
+/** Usage data from API responses */
+interface UsageData {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/** Result from streaming AI calls, includes content and optional usage */
+interface StreamResult {
+  content: string;
+  usage?: UsageData;
+}
+
 /** Parse SSE lines from a readable stream, calling onToken for each content delta */
 async function parseSSEStream(
   body: ReadableStream<Uint8Array>,
   extractDelta: (parsed: Record<string, unknown>) => string | null,
   onToken: TokenCallback,
-  signal?: AbortSignal
-): Promise<string> {
+  signal?: AbortSignal,
+  extractUsage?: (parsed: Record<string, unknown>) => UsageData | null
+): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullContent = "";
+  let usage: UsageData | undefined;
 
   try {
     while (true) {
@@ -858,6 +1046,11 @@ async function parseSSEStream(
           fullContent += delta;
           onToken(delta);
         }
+        // Try to extract usage data (typically in the final chunk)
+        if (extractUsage) {
+          const u = extractUsage(parsed);
+          if (u) usage = u;
+        }
       } catch {
         // skip malformed SSE lines
       }
@@ -866,12 +1059,12 @@ async function parseSSEStream(
   } catch (err) {
     // If aborted, return what we have so far
     if (signal?.aborted) {
-      return fullContent || "[Streaming aborted]";
+      return { content: fullContent || "[Streaming aborted]", usage };
     }
     throw err;
   }
 
-  return fullContent || "[No response from model]";
+  return { content: fullContent || "[No response from model]", usage };
 }
 
 async function callOpenAICompatibleStream(
@@ -881,7 +1074,7 @@ async function callOpenAICompatibleStream(
   messages: ChatMessage[],
   onToken: TokenCallback,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<StreamResult> {
   const url = `${config.baseUrl}/chat/completions`;
 
   const headers: Record<string, string> = {
@@ -899,7 +1092,8 @@ async function callOpenAICompatibleStream(
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     max_tokens: 16384,
     temperature: 0.3,
-    stream: true
+    stream: true,
+    stream_options: { include_usage: true }
   });
 
   console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
@@ -921,7 +1115,19 @@ async function callOpenAICompatibleStream(
       return choices?.[0]?.delta?.content ?? null;
     },
     onToken,
-    signal
+    signal,
+    // Extract usage from the final chunk (Chat Completions includes usage when stream_options.include_usage is true)
+    (parsed) => {
+      const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+      if (usage && typeof usage.prompt_tokens === "number") {
+        return {
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens ?? 0,
+          totalTokens: usage.total_tokens ?? (usage.prompt_tokens + (usage.completion_tokens ?? 0))
+        };
+      }
+      return null;
+    }
   );
 }
 
@@ -932,7 +1138,7 @@ async function callCopilotStream(
   messages: ChatMessage[],
   onToken: TokenCallback,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<StreamResult> {
   const useResponsesApi = shouldUseCopilotResponsesApi(model);
   const isReasoning = isCopilotReasoningModel(model);
 
@@ -980,6 +1186,9 @@ async function callCopilotStream(
     console.log(`[ai-stream] Calling ${config.label} (${model}) via Responses API at ${url}`);
     const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
 
+    // Capture rate limit headers for usage tracking
+    captureCopilotRateLimits(response.headers);
+
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
       throw new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
@@ -1004,7 +1213,23 @@ async function callCopilotStream(
         return null;
       },
       onToken,
-      signal
+      signal,
+      // Extract usage from response.completed event
+      (parsed) => {
+        const type = parsed.type as string | undefined;
+        if (type === "response.completed") {
+          const resp = parsed.response as { usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } } | undefined;
+          const u = resp?.usage;
+          if (u && typeof u.input_tokens === "number") {
+            return {
+              inputTokens: u.input_tokens,
+              outputTokens: u.output_tokens ?? 0,
+              totalTokens: u.total_tokens ?? (u.input_tokens + (u.output_tokens ?? 0))
+            };
+          }
+        }
+        return null;
+      }
     );
   } else {
     // --- Chat Completions API for non-GPT-5 models ---
@@ -1015,6 +1240,7 @@ async function callCopilotStream(
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
       max_tokens: 16384,
       stream: true,
+      stream_options: { include_usage: true },
     };
 
     // Reasoning models (o1, o3, o4): no temperature
@@ -1026,6 +1252,9 @@ async function callCopilotStream(
 
     console.log(`[ai-stream] Calling ${config.label} (${model}) via Chat Completions at ${url}`);
     const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
+
+    // Capture rate limit headers for usage tracking
+    captureCopilotRateLimits(response.headers);
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
@@ -1046,7 +1275,19 @@ async function callCopilotStream(
         return choices?.[0]?.delta?.content ?? null;
       },
       onToken,
-      signal
+      signal,
+      // Extract usage from the final chunk
+      (parsed) => {
+        const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+        if (usage && typeof usage.prompt_tokens === "number") {
+          return {
+            inputTokens: usage.prompt_tokens,
+            outputTokens: usage.completion_tokens ?? 0,
+            totalTokens: usage.total_tokens ?? (usage.prompt_tokens + (usage.completion_tokens ?? 0))
+          };
+        }
+        return null;
+      }
     );
   }
 }
@@ -1058,7 +1299,7 @@ async function callAnthropicStream(
   messages: ChatMessage[],
   onToken: TokenCallback,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<StreamResult> {
   const url = `${config.baseUrl}/messages`;
 
   const systemMessage = messages.find((m) => m.role === "system");
@@ -1100,10 +1341,13 @@ async function callAnthropicStream(
   }
 
   // Anthropic SSE format: event: content_block_delta + data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+  // Usage: message_start has usage.input_tokens, message_delta has usage.output_tokens
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullContent = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
 
   try {
   while (true) {
@@ -1128,6 +1372,8 @@ async function callAnthropicStream(
         const parsed = JSON.parse(payload) as {
           type?: string;
           delta?: { type?: string; text?: string };
+          message?: { usage?: { input_tokens?: number } };
+          usage?: { output_tokens?: number };
           error?: { message?: string };
         };
         if (parsed.error) {
@@ -1137,6 +1383,14 @@ async function callAnthropicStream(
           fullContent += parsed.delta.text;
           onToken(parsed.delta.text);
         }
+        // Capture input tokens from message_start
+        if (parsed.type === "message_start" && parsed.message?.usage?.input_tokens) {
+          inputTokens = parsed.message.usage.input_tokens;
+        }
+        // Capture output tokens from message_delta
+        if (parsed.type === "message_delta" && parsed.usage?.output_tokens) {
+          outputTokens = parsed.usage.output_tokens;
+        }
       } catch (e) {
         if (e instanceof Error && e.message.includes("streaming error")) throw e;
         // skip malformed lines
@@ -1145,15 +1399,17 @@ async function callAnthropicStream(
   }
   } catch (err) {
     if (signal?.aborted) {
-      return fullContent || "[Streaming aborted]";
+      const usage = inputTokens > 0 ? { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens } : undefined;
+      return { content: fullContent || "[Streaming aborted]", usage };
     }
     throw err;
   }
 
-  return fullContent || "[No response from model]";
+  const usage = inputTokens > 0 ? { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens } : undefined;
+  return { content: fullContent || "[No response from model]", usage };
 }
 
-/** Streaming version of callAI — invokes onToken for each chunk, returns full content */
+/** Streaming version of callAI — invokes onToken for each chunk, returns full content and usage */
 async function callAIStream(
   providerLabel: string,
   uiModel: string,
@@ -1161,19 +1417,19 @@ async function callAIStream(
   onToken: TokenCallback,
   fileContext?: string,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<StreamResult> {
   const config = resolveProvider(providerLabel);
   if (!config) {
     const errMsg = `[Error] Unknown provider: ${providerLabel}. Available: ${providerConfigs.map((c) => c.label).join(", ")}`;
     onToken(errMsg);
-    return errMsg;
+    return { content: errMsg };
   }
 
   const apiKey = await getKeyForProviderAsync(config.id);
   if (!apiKey) {
     const errMsg = `[Error] No API key set for ${config.label}. Go to Settings in the sidebar to add your API key, or set the ${config.envKey} environment variable and restart the server.`;
     onToken(errMsg);
-    return errMsg;
+    return { content: errMsg };
   }
 
   const model = resolveModel(config, uiModel);
@@ -1188,23 +1444,27 @@ async function callAIStream(
   ];
 
   try {
+    let result: StreamResult;
     if (config.format === "anthropic") {
-      return await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
+      result = await callAnthropicStream(config, apiKey, model, chatMessages, onToken, signal);
+    } else if (config.format === "copilot") {
+      result = await callCopilotStream(config, apiKey, model, chatMessages, onToken, signal);
+    } else {
+      result = await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
     }
-    if (config.format === "copilot") {
-      return await callCopilotStream(config, apiKey, model, chatMessages, onToken, signal);
-    }
-    return await callOpenAICompatibleStream(config, apiKey, model, chatMessages, onToken, signal);
+    // Track local usage for this provider
+    trackLocalUsage(config.id, result.usage);
+    return result;
   } catch (error) {
     if (signal?.aborted) {
-      return "[Streaming aborted]";
+      return { content: "[Streaming aborted]" };
     }
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ai-stream] ${config.label} error:`, message);
 
     const errMsg = `[Error] ${config.label} API call failed: ${message}`;
     onToken(errMsg);
-    return errMsg;
+    return { content: errMsg };
   }
 }
 
@@ -1501,6 +1761,12 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url === "/api/provider-usage") {
+      const usage = await getAllProviderUsage();
+      sendJson(response, 200, { providers: usage });
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/sessions") {
       const payload = createSessionSchema.parse(await readJsonBody(request));
       const now = new Date().toISOString();
@@ -1533,13 +1799,13 @@ const server = createServer(async (request, response) => {
 
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext, abortController.signal).then((reply) => {
+      }, fileContext, abortController.signal).then((result) => {
         activeAbortControllers.delete(id);
-        attachMessage(session, "assistant", reply);
+        attachMessage(session, "assistant", result.content);
         session.status = "idle";
         sessionStore.set(id, { ...session });
-        emitter.emit("done", { messageId });
-        console.log(`[ai-stream] Session ${id} got reply (${reply.length} chars)`);
+        emitter.emit("done", { messageId, usage: result.usage });
+        console.log(`[ai-stream] Session ${id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(id);
         const message = error instanceof Error ? error.message : String(error);
@@ -1584,13 +1850,13 @@ const server = createServer(async (request, response) => {
       // Streaming AI call
       callAIStream(payload.provider, payload.model, conversationMessages, (token) => {
         emitter.emit("token", { messageId, token });
-      }, fileContext, abortController.signal).then((reply) => {
+      }, fileContext, abortController.signal).then((result) => {
         activeAbortControllers.delete(session.id);
-        attachMessage(session, "assistant", reply);
+        attachMessage(session, "assistant", result.content);
         session.status = "idle";
         sessionStore.set(session.id, { ...session });
-        emitter.emit("done", { messageId });
-        console.log(`[ai-stream] Session ${session.id} got reply (${reply.length} chars)`);
+        emitter.emit("done", { messageId, usage: result.usage });
+        console.log(`[ai-stream] Session ${session.id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(session.id);
         const message = error instanceof Error ? error.message : String(error);
@@ -1647,8 +1913,8 @@ const server = createServer(async (request, response) => {
       const onToken = (payload: { messageId: string; token: string }) => {
         response.write(`data: ${JSON.stringify({ type: "token", messageId: payload.messageId, token: payload.token })}\n\n`);
       };
-      const onDone = (payload: { messageId: string }) => {
-        response.write(`data: ${JSON.stringify({ type: "done", messageId: payload.messageId })}\n\n`);
+      const onDone = (payload: { messageId: string; usage?: UsageData }) => {
+        response.write(`data: ${JSON.stringify({ type: "done", messageId: payload.messageId, usage: payload.usage })}\n\n`);
       };
       const onError = (payload: { messageId: string; error: string }) => {
         response.write(`data: ${JSON.stringify({ type: "error", messageId: payload.messageId, error: payload.error })}\n\n`);
