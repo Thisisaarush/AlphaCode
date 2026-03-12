@@ -46,6 +46,7 @@ import {
   Trash2,
   Wrench,
   X,
+  PanelLeft,
   Zap
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -71,11 +72,35 @@ const isMac = electronBridge?.platform === "darwin";
 type FileItem = WorkspaceSnapshot["workspace"]["files"][number];
 type DockTab = "terminal" | "changes" | "activity";
 type SidebarTab = "chat" | "git";
-type FsEntry = {
+type SkillItem = {
+  id: string;
   name: string;
   path: string;
-  type: "directory" | "file";
-  size: number | null;
+};
+type AgentItem = {
+  id: string;
+  label: string;
+  description?: string;
+};
+type PluginItem = {
+  id: string;
+  label: string;
+  version?: string;
+};
+type SharedSession = {
+  id: string;
+  sessionId: string;
+  title: string;
+  content: string;
+  createdAt: string;
+};
+type CiContext = {
+  provider: "gitlab" | "github" | "unknown";
+  jobId?: string;
+  pipelineId?: string;
+  projectPath?: string;
+  mergeRequestIid?: string;
+  branch?: string;
 };
 
 const serverUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3030";
@@ -140,6 +165,34 @@ function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
   return String(tokens);
+}
+
+function modelMatchesMode(modelId: string, mode: string): boolean {
+  const lower = modelId.toLowerCase();
+  switch (mode) {
+    case "reasoning":
+      return lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("o4");
+    case "code":
+      return lower.includes("codex") || lower.includes("code") || lower.includes("grok");
+    case "fast":
+      return lower.includes("mini") || lower.includes("flash") || lower.includes("haiku");
+    case "general":
+    default:
+      return true;
+  }
+}
+
+function highlightLabel(label: string, query: string): JSX.Element | string {
+  if (!query) return label;
+  const idx = label.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return label;
+  return (
+    <>
+      {label.slice(0, idx)}
+      <strong>{label.slice(idx, idx + query.length)}</strong>
+      {label.slice(idx + query.length)}
+    </>
+  );
 }
 
 const railItems: Array<{ key: SidebarTab; icon: typeof MessageSquare; label: string }> = [
@@ -243,19 +296,67 @@ function prettifyModelId(raw: string): string {
     .trim();
 }
 
-function groupFiles(files: FileItem[]) {
-  const groups = new Map<string, FileItem[]>();
-  for (const file of files) {
-    const top = file.path.split("/")[0] ?? file.folder;
-    const existing = groups.get(top) ?? [];
-    existing.push(file);
-    groups.set(top, existing);
-  }
+type TreeNode = {
+  name: string;
+  path: string;
+  type: "folder" | "file";
+  children?: TreeNode[];
+  file?: FileItem;
+};
 
-  return Array.from(groups.entries()).map(([label, items]) => ({
-    label,
-    items: items.sort((left, right) => left.path.localeCompare(right.path))
-  }));
+function buildTree(items: FileItem[]): TreeNode {
+  const root: TreeNode = { name: "", path: "", type: "folder", children: [] };
+  for (const file of items) {
+    const parts = file.path.split("/").filter(Boolean);
+    let current = root;
+    let currentPath = "";
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i]!;
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isFile = i === parts.length - 1;
+      if (!current.children) current.children = [];
+      let child = current.children.find((c) => c.name === part);
+      if (!child) {
+        child = {
+          name: part,
+          path: currentPath,
+          type: isFile ? "file" : "folder"
+        };
+        current.children.push(child);
+      }
+      if (isFile) {
+        child.file = file;
+      } else {
+        if (!child.children) child.children = [];
+      }
+      current = child;
+    }
+  }
+  const sortNode = (node: TreeNode) => {
+    if (!node.children) return;
+    node.children.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    node.children.forEach(sortNode);
+  };
+  sortNode(root);
+  return root;
+}
+
+function filterTree(node: TreeNode, query: string): TreeNode | null {
+  if (!query) return node;
+  const q = query.toLowerCase();
+  if (node.type === "file") {
+    return node.path.toLowerCase().includes(q) ? node : null;
+  }
+  const children = (node.children ?? [])
+    .map((child) => filterTree(child, query))
+    .filter((child): child is TreeNode => Boolean(child));
+  if (children.length > 0 || node.path.toLowerCase().includes(q)) {
+    return { ...node, children };
+  }
+  return null;
 }
 
 export default function App() {
@@ -265,6 +366,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "");
   const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "");
+  const [mode, setMode] = useState(() => localStorage.getItem("ac:mode") || "general");
   const [prompt, setPrompt] = useState("");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
   const [dockTab, setDockTab] = useState<DockTab>("terminal");
@@ -275,12 +377,18 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState(() => localStorage.getItem("ac:sessionId") || "");
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  const [fsEntries, setFsEntries] = useState<FsEntry[]>([]);
-  const [fsPath, setFsPath] = useState("apps");
+  const [treeFilter, setTreeFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState("");
+  const [shareNotice, setShareNotice] = useState("");
+  const [sharedSession, setSharedSession] = useState<SharedSession | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [webPassword, setWebPassword] = useState(() => localStorage.getItem("ac:webPassword") || "");
+  const [ciContext, setCiContext] = useState<CiContext | null>(null);
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showLeftPanel, setShowLeftPanel] = useState(true);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const terminalOutputRef = useRef<HTMLPreElement>(null);
 
@@ -320,6 +428,12 @@ export default function App() {
     fileChange?: FileChange;
     status: "running" | "done" | "error";
   }>>([]);
+  const [pendingPermissions, setPendingPermissions] = useState<Array<{
+    toolCallId: string;
+    toolName: string;
+    action: string;
+    messageId: string;
+  }>>([]);
 
   // Tracks whether user explicitly cleared the session (prevents auto-select on next poll)
   const userClearedSessionRef = useRef(false);
@@ -351,6 +465,13 @@ export default function App() {
   const [projectError, setProjectError] = useState("");
   const [projectPathInput, setProjectPathInput] = useState("");
   const projectFilterRef = useRef<HTMLInputElement>(null);
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [activeSkill, setActiveSkill] = useState<SkillItem | null>(null);
+  const [skillContent, setSkillContent] = useState("");
+  const [skillLoading, setSkillLoading] = useState(false);
+  const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [activeAgentId, setActiveAgentId] = useState<string>("");
+  const [plugins, setPlugins] = useState<PluginItem[]>([]);
 
   // Model toggles — persisted to localStorage, keyed by raw model ID
   const [disabledModels, setDisabledModels] = useState<Record<string, boolean>>(() => {
@@ -383,12 +504,35 @@ export default function App() {
   const providerUsageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(url, init);
+    const password = localStorage.getItem("ac:webPassword") || "";
+    const headers: Record<string, string> = {
+      ...(init?.headers as Record<string, string> | undefined),
+    };
+    if (password) {
+      headers.Authorization = `Bearer ${password}`;
+    }
+    const response = await fetch(url, { ...init, headers });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
       throw new Error(body?.message ?? body?.error ?? `Request failed: ${response.status}`);
     }
     return (await response.json()) as T;
+  }
+
+  async function approvePermission(toolCallId: string, allow: boolean, remember: boolean) {
+    if (!activeSessionId) return;
+    try {
+      await fetchJson(`${serverUrl}/api/permissions/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: activeSessionId, toolCallId, allow, remember })
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Permission update failed";
+      setError(msg);
+    } finally {
+      setPendingPermissions((prev) => prev.filter((p) => p.toolCallId !== toolCallId));
+    }
   }
 
   /** Fetch provider usage data from server */
@@ -431,13 +575,17 @@ export default function App() {
     setStreamingMessageId(null);
     setActiveToolCalls([]);
 
-    const es = new EventSource(`${serverUrl}/api/sessions/${sessionId}/stream`);
+    const password = localStorage.getItem("ac:webPassword") || "";
+    const streamUrl = password
+      ? `${serverUrl}/api/sessions/${sessionId}/stream?token=${encodeURIComponent(password)}`
+      : `${serverUrl}/api/sessions/${sessionId}/stream`;
+    const es = new EventSource(streamUrl);
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as {
-          type: "connected" | "token" | "done" | "error" | "tool_call" | "tool_result";
+          type: "connected" | "token" | "done" | "error" | "tool_call" | "tool_result" | "permission_request";
           messageId?: string;
           token?: string;
           error?: string;
@@ -448,6 +596,7 @@ export default function App() {
           result?: string;
           isError?: boolean;
           fileChange?: FileChange;
+          action?: string;
         };
 
         if (data.type === "token" && data.token) {
@@ -480,6 +629,16 @@ export default function App() {
                 : tc
             )
           );
+        } else if (data.type === "permission_request" && data.toolCallId) {
+          setPendingPermissions((prev) => ([
+            ...prev,
+            {
+              toolCallId: data.toolCallId!,
+              toolName: data.toolName || "unknown",
+              action: data.action || data.toolName || "unknown",
+              messageId: data.messageId || ""
+            }
+          ]));
         } else if (data.type === "done") {
           // Accumulate usage data if present
           if (data.usage) {
@@ -498,6 +657,7 @@ export default function App() {
           setStreamingMessageId(null);
           streamingContentRef.current = "";
           setActiveToolCalls([]);
+          setPendingPermissions([]);
           // Fetch the final session state
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
@@ -852,10 +1012,32 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [error, showSearchPopup, showSettings, showBranchSwitcher, showProjectSwitcher]);
 
+  const isShareRoute = window.location.pathname.startsWith("/share/");
+
+  useEffect(() => {
+    if (!isShareRoute) return;
+    const shareId = window.location.pathname.replace("/share/", "");
+    setShareLoading(true);
+    fetchJson<SharedSession>(`${serverUrl}/share/${shareId}`)
+      .then((payload) => {
+        setSharedSession(payload);
+        setShareError("");
+      })
+      .catch((err) => {
+        setShareError(err instanceof Error ? err.message : "Share not found");
+      })
+      .finally(() => setShareLoading(false));
+  }, [isShareRoute]);
+
   async function loadWorkspace() {
     const payload = await fetchJson<WorkspaceSnapshot>(`${serverUrl}/api/workspace`);
     setSnapshot(payload);
     setTerminalRuns(payload.recentRuns);
+    setSkills(payload.skills ?? []);
+    setAgents(payload.agents ?? []);
+    setActiveAgentId(payload.activeAgentId ?? "");
+    setPlugins(payload.plugins ?? []);
+    setCiContext(payload.ci ?? null);
     setDrafts((current) => {
       const next = { ...current };
       for (const file of payload.workspace.files) {
@@ -865,11 +1047,6 @@ export default function App() {
       }
       return next;
     });
-
-    if (!activeFileId && payload.workspace.files[0]) {
-      setActiveFileId(payload.workspace.files[0].id);
-      setOpenFileIds([payload.workspace.files[0].id]);
-    }
 
     if (!activeSessionId && payload.sessions[0] && !userClearedSessionRef.current) {
       setActiveSessionId(payload.sessions[0].id);
@@ -884,8 +1061,87 @@ export default function App() {
       if (Object.keys(current).length > 0) {
         return current;
       }
-      return Object.fromEntries(groupFiles(payload.workspace.files).map((group) => [group.label, true]));
+      return {};
     });
+  }
+
+  async function reloadConfig() {
+    try {
+      await fetchJson(`${serverUrl}/api/config/reload`, { method: "POST" });
+      await loadWorkspace();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to reload config";
+      setError(msg);
+    }
+  }
+
+  async function openSkill(skill: SkillItem) {
+    setActiveSkill(skill);
+    setSkillLoading(true);
+    try {
+      const payload = await fetchJson<{ path: string; content: string }>(
+        `${serverUrl}/api/skills?path=${encodeURIComponent(skill.path)}`
+      );
+      setSkillContent(payload.content);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to load skill";
+      setError(msg);
+      setSkillContent("");
+    } finally {
+      setSkillLoading(false);
+    }
+  }
+
+  async function switchAgent(agentId: string) {
+    try {
+      await fetchJson(`${serverUrl}/api/agents/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId })
+      });
+      setActiveAgentId(agentId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to switch agent";
+      setError(msg);
+    }
+  }
+
+  async function reloadPlugins() {
+    try {
+      await fetchJson(`${serverUrl}/api/plugins/reload`, { method: "POST" });
+      await loadWorkspace();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to reload plugins";
+      setError(msg);
+    }
+  }
+
+  async function shareSession(sessionId: string) {
+    try {
+      const payload = await fetchJson<{ id: string; url: string }>(`${serverUrl}/api/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId })
+      });
+      const fullUrl = `${serverUrl}${payload.url}`;
+      await navigator.clipboard.writeText(fullUrl);
+      setShareNotice("Share link copied to clipboard");
+      await loadWorkspace();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to share session";
+      setError(msg);
+    }
+  }
+
+  async function unshareSession(shareId: string) {
+    try {
+      await fetchJson(`${serverUrl}/api/share/${shareId}`, { method: "DELETE" });
+      setShareNotice("Share removed");
+      await loadWorkspace();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to unshare session";
+      setError(msg);
+    }
   }
 
   async function loadSession(sessionId: string) {
@@ -900,14 +1156,6 @@ export default function App() {
       const merged = [...payload.commandRuns, ...current.filter((item) => !payload.commandRuns.some((run) => run.id === item.id))];
       return merged.slice(0, 12);
     });
-  }
-
-  async function loadFs(pathValue: string) {
-    const payload = await fetchJson<{ path: string; children: FsEntry[] }>(
-      `${serverUrl}/api/fs?path=${encodeURIComponent(pathValue)}`
-    );
-    setFsPath(payload.path);
-    setFsEntries(payload.children.sort((left, right) => left.path.localeCompare(right.path)));
   }
 
   async function loadAuthStatus() {
@@ -977,7 +1225,7 @@ export default function App() {
       try {
         setLoading(true);
         setError("");
-        await Promise.all([loadWorkspace(), loadFs("apps"), loadAuthStatus()]);
+        await Promise.all([loadWorkspace(), loadAuthStatus()]);
       } catch (nextError) {
         if (active) {
           setError(nextError instanceof Error ? nextError.message : "Failed to load workspace");
@@ -998,12 +1246,14 @@ export default function App() {
   useEffect(() => {
     if (!activeSessionId) {
       setSessionDetail(null);
+      setPendingPermissions([]);
       return;
     }
 
     void loadSession(activeSessionId).catch((nextError) => {
       setError(nextError instanceof Error ? nextError.message : "Failed to load session");
     });
+    setPendingPermissions([]);
   }, [activeSessionId]);
 
   useEffect(() => {
@@ -1024,6 +1274,12 @@ export default function App() {
     const timer = setTimeout(() => setError(""), 6000);
     return () => clearTimeout(timer);
   }, [error]);
+
+  useEffect(() => {
+    if (!shareNotice) return;
+    const timer = setTimeout(() => setShareNotice(""), 4000);
+    return () => clearTimeout(timer);
+  }, [shareNotice]);
 
   // Auto-scroll to bottom on new messages or streaming content
   useEffect(() => {
@@ -1092,11 +1348,19 @@ export default function App() {
   }, [githubPolling, githubDevice]);
 
   const files = snapshot?.workspace.files ?? [];
-  const activeFile = files.find((file) => file.id === activeFileId) ?? files[0] ?? null;
   const openFiles = openFileIds
     .map((fileId) => files.find((file) => file.id === fileId))
     .filter((file): file is FileItem => Boolean(file));
-  const groupedFiles = useMemo(() => groupFiles(files), [files]);
+  const activeFile = (() => {
+    if (activeFileId && openFileIds.includes(activeFileId)) {
+      return files.find((file) => file.id === activeFileId) ?? null;
+    }
+    const fallbackId = openFileIds[0];
+    if (!fallbackId) return null;
+    return files.find((file) => file.id === fallbackId) ?? null;
+  })();
+  const fileTree = useMemo(() => buildTree(files), [files]);
+  const filteredTree = useMemo(() => filterTree(fileTree, treeFilter.trim()), [fileTree, treeFilter]);
   const changedFiles = useMemo(
     () => files.filter((file) => (drafts[file.id] ?? file.content) !== file.content),
     [drafts, files]
@@ -1136,11 +1400,11 @@ export default function App() {
   }
 
   function closeFile(fileId: string) {
-    const nextOpenFileIds = openFileIds.filter((item) => item !== fileId);
-    setOpenFileIds(nextOpenFileIds);
-    if (activeFileId === fileId) {
-      setActiveFileId(nextOpenFileIds[0] ?? files[0]?.id ?? "");
-    }
+    setOpenFileIds((current) => {
+      const nextOpenFileIds = current.filter((item) => item !== fileId);
+      setActiveFileId((currentActive) => (currentActive === fileId ? (nextOpenFileIds[0] ?? "") : currentActive));
+      return nextOpenFileIds;
+    });
   }
 
   async function handleSaveFile() {
@@ -1347,8 +1611,6 @@ export default function App() {
       setOpenFileIds([]);
       setDrafts({});
       setExpandedGroups({});
-      setFsEntries([]);
-      setFsPath("");
       setSearchQuery("");
 
       // Clear session state — old sessions belong to the previous project
@@ -1420,6 +1682,26 @@ export default function App() {
     );
   }
 
+  if (isShareRoute) {
+    return (
+      <main className="share-page">
+        <div className="share-card">
+          <div className="share-header">
+            <strong>{sharedSession?.title ?? "Shared session"}</strong>
+            <small>{sharedSession ? new Date(sharedSession.createdAt).toLocaleString() : ""}</small>
+          </div>
+          {shareLoading ? (
+            <div className="empty-inline">Loading shared session...</div>
+          ) : shareError ? (
+            <div className="empty-inline">{shareError}</div>
+          ) : (
+            <pre className="share-body">{sharedSession?.content ?? ""}</pre>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="shell">
       {/* ===== Titlebar ===== */}
@@ -1445,6 +1727,14 @@ export default function App() {
         </div>
 
         <div className="titlebar-side right">
+          <button
+            className={`toggle-panel-btn${showLeftPanel ? " active" : ""}`}
+            type="button"
+            onClick={() => setShowLeftPanel((v) => !v)}
+            title="Toggle sidebar panel"
+          >
+            <PanelLeft size={12} />
+          </button>
           <button
             className={`toggle-panel-btn${showTerminal ? " active" : ""}`}
             type="button"
@@ -1497,7 +1787,7 @@ export default function App() {
       {/* ===== Body: sidebar + main ===== */}
       <div className="workspace">
         {/* Left sidebar */}
-        <div className="sidebar-layout">
+        <div className={`sidebar-layout${showLeftPanel ? "" : " collapsed"}`}>
           <aside className="sidebar-rail">
             {railItems.map((item) => {
               const Icon = item.icon;
@@ -1524,88 +1814,105 @@ export default function App() {
             </button>
           </aside>
 
-          <section className="sidebar-panel">
-            {sidebarTab === "chat" ? (
-              <>
-                <div className="pane-header">
-                  <div>
-                    <span className="pane-kicker">Threads</span>
-                    <h2>Sessions</h2>
+          {showLeftPanel ? (
+            <section className="sidebar-panel">
+              {sidebarTab === "chat" ? (
+                <>
+                  <div className="pane-header">
+                    <div>
+                      <span className="pane-kicker">Threads</span>
+                      <h2>Sessions</h2>
+                    </div>
+                    <button className="pane-button accent" type="button" onClick={handleNewSession}>
+                      <Sparkles size={12} />
+                      <span>New</span>
+                    </button>
                   </div>
-                  <button className="pane-button accent" type="button" onClick={handleNewSession}>
-                    <Sparkles size={12} />
-                    <span>New</span>
-                  </button>
-                </div>
 
-                <div className="session-list compact-scroll">
-                  {(snapshot?.sessions ?? []).length === 0 ? (
-                    <div className="empty-inline">No sessions yet</div>
-                  ) : (
-                    snapshot?.sessions.map((session) => (
-                      <div
-                        key={session.id}
-                        className={`session-row${activeSessionId === session.id ? " active" : ""}`}
-                      >
-                        <button
-                          className="session-row-main"
-                          type="button"
-                          onClick={() => { userClearedSessionRef.current = false; setActiveSessionId(session.id); }}
+                  <div className="session-list compact-scroll">
+                    {(snapshot?.sessions ?? []).length === 0 ? (
+                      <div className="empty-inline">No sessions yet</div>
+                    ) : (
+                      snapshot?.sessions.map((session) => (
+                        <div
+                          key={session.id}
+                          className={`session-row${activeSessionId === session.id ? " active" : ""}`}
                         >
-                          <span className={`session-status ${session.status}`} />
-                          <span className="session-copy">
-                            <strong>{session.title}</strong>
-                            <small>
-                              {session.provider} · {formatTime(session.updatedAt)}
-                            </small>
-                          </span>
-                        </button>
-                        <button
-                          className="session-delete-btn"
-                          type="button"
-                          title="Delete session"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleDeleteSession(session.id);
-                          }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="sidebar-footer-note">
-                  <span>Recent runs</span>
-                  <strong>{terminalRuns.length}</strong>
-                </div>
-              </>
-            ) : null}
-
-            {sidebarTab === "git" ? (
-              <>
-                <div className="pane-header">
-                  <div>
-                    <span className="pane-kicker">Review</span>
-                    <h2>Changes</h2>
+                          <button
+                            className="session-row-main"
+                            type="button"
+                            onClick={() => { userClearedSessionRef.current = false; setActiveSessionId(session.id); }}
+                          >
+                            <span className={`session-status ${session.status}`} />
+                            <span className="session-copy">
+                              <strong>{session.title}</strong>
+                              <small>
+                                {session.provider} · {formatTime(session.updatedAt)}
+                              </small>
+                            </span>
+                          </button>
+                          <button
+                            className="session-delete-btn"
+                            type="button"
+                            title="Delete session"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDeleteSession(session.id);
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                          <button
+                            className="session-share-btn"
+                            type="button"
+                            title={session.sharedId ? "Unshare session" : "Share session"}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (session.sharedId) {
+                                void unshareSession(session.sharedId);
+                              } else {
+                                void shareSession(session.id);
+                              }
+                            }}
+                          >
+                            {session.sharedId ? <LogOut size={12} /> : <ExternalLink size={12} />}
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
-                </div>
-                <div className="change-list compact-scroll">
-                  {changedFiles.length === 0 ? (
-                    <div className="empty-inline">No unsaved changes</div>
-                  ) : (
-                    changedFiles.map((file) => (
-                      <button key={file.id} className="change-card" type="button" onClick={() => openFile(file.id)}>
-                        <FileDiff size={13} />
-                        <span>{file.path}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </>
-            ) : null}
-          </section>
+
+                  <div className="sidebar-footer-note">
+                    <span>Recent runs</span>
+                    <strong>{terminalRuns.length}</strong>
+                  </div>
+                </>
+              ) : null}
+
+              {sidebarTab === "git" ? (
+                <>
+                  <div className="pane-header">
+                    <div>
+                      <span className="pane-kicker">Review</span>
+                      <h2>Changes</h2>
+                    </div>
+                  </div>
+                  <div className="change-list compact-scroll">
+                    {changedFiles.length === 0 ? (
+                      <div className="empty-inline">No unsaved changes</div>
+                    ) : (
+                      changedFiles.map((file) => (
+                        <button key={file.id} className="change-card" type="button" onClick={() => openFile(file.id)}>
+                          <FileDiff size={13} />
+                          <span>{file.path}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </section>
+          ) : null}
         </div>
 
         {/* Main content area */}
@@ -1910,68 +2217,28 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Suggestions */}
-                  {(snapshot?.suggestions ?? []).length > 0 ? (
-                    <div className="suggestion-strip">
-                      {(snapshot?.suggestions ?? []).map((suggestion) => (
-                        <button
-                          key={suggestion.id}
-                          className="suggestion-chip"
-                          type="button"
-                          onClick={() => void handleSubmitPrompt(suggestion.label)}
-                        >
-                          {suggestion.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  {/* Quick-action chips — shown after assistant response or when no messages */}
-                  {!isStreaming && sessionDetail && sessionDetail.messages.length > 0 && sessionDetail.messages[sessionDetail.messages.length - 1]?.role === "assistant" ? (
-                    <div className="suggestion-chips">
-                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Explain what this code does")}>
-                        Explain this
-                      </button>
-                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Find and fix any bugs")}>
-                        Fix bugs
-                      </button>
-                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Add error handling")}>
-                        Add error handling
-                      </button>
-                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Write tests for this")}>
-                        Write tests
-                      </button>
-                      <button className="suggestion-chip-btn" type="button" onClick={() => setPrompt("Refactor for better readability")}>
-                        Refactor
-                      </button>
-                    </div>
-                  ) : null}
+                  {null}
 
                   {/* Floating dock composer */}
                   <div className="dock-area">
                     <div className="dock-surface">
                       <div className="dock-composer">
-                        <div className="dock-context">
-                          <span className="context-chip">@file {activeFile?.name ?? "none"}</span>
-                          <span className="context-chip">@terminal</span>
-                          <span className="context-chip">/plan</span>
-                        </div>
                         <div className="dock-textarea-wrap" style={{ position: "relative" }}>
                           {/* Autocomplete popup */}
                           {autocompleteType && (() => {
                             const atItems = [
-                              { label: "@file", desc: "Reference a file", icon: <FileCode2 size={13} /> },
-                              { label: "@terminal", desc: "Terminal context", icon: <TerminalSquare size={13} /> },
-                              { label: "@workspace", desc: "Workspace context", icon: <Files size={13} /> },
-                              { label: "@selection", desc: "Selected code", icon: <Braces size={13} /> },
+                              { label: "@file", insert: "@file", desc: "Reference a file", icon: <FileCode2 size={13} /> },
+                              { label: "@terminal", insert: "@terminal", desc: "Terminal context", icon: <TerminalSquare size={13} /> },
+                              { label: "@workspace", insert: "@workspace", desc: "Workspace context", icon: <Files size={13} /> },
+                              { label: "@selection", insert: "@selection", desc: "Selected code", icon: <Braces size={13} /> },
                             ];
                             const slashItems = [
-                              { label: "/plan", desc: "Create an implementation plan", icon: <Sparkles size={13} /> },
-                              { label: "/review", desc: "Review code changes", icon: <Search size={13} /> },
-                              { label: "/fix", desc: "Fix errors and bugs", icon: <Settings2 size={13} /> },
-                              { label: "/explain", desc: "Explain code", icon: <MessageSquare size={13} /> },
-                              { label: "/test", desc: "Write tests", icon: <FileCode2 size={13} /> },
-                              { label: "/refactor", desc: "Refactor code", icon: <Braces size={13} /> },
+                              { label: "/plan", insert: "plan", desc: "Create an implementation plan", icon: <Sparkles size={13} /> },
+                              { label: "/review", insert: "review", desc: "Review code changes", icon: <Search size={13} /> },
+                              { label: "/fix", insert: "fix", desc: "Fix errors and bugs", icon: <Settings2 size={13} /> },
+                              { label: "/explain", insert: "explain", desc: "Explain code", icon: <MessageSquare size={13} /> },
+                              { label: "/test", insert: "test", desc: "Write tests", icon: <FileCode2 size={13} /> },
+                              { label: "/refactor", insert: "refactor", desc: "Refactor code", icon: <Braces size={13} /> },
                             ];
                             const items = autocompleteType === "@" ? atItems : slashItems;
                             const filtered = autocompleteQuery
@@ -1989,14 +2256,16 @@ export default function App() {
                                       e.preventDefault();
                                       // Insert the command into prompt
                                       const before = prompt.slice(0, prompt.lastIndexOf(autocompleteType === "@" ? "@" : "/"));
-                                      setPrompt(before + item.label + " ");
+                                      setPrompt(before + item.insert + " ");
                                       setAutocompleteType(null);
                                       setAutocompleteQuery("");
                                       setAutocompleteIndex(0);
                                     }}
                                   >
                                     {item.icon}
-                                    <span className="autocomplete-item-label">{item.label}</span>
+                                    <span className="autocomplete-item-label">
+                                      {highlightLabel(item.label, autocompleteQuery)}
+                                    </span>
                                     <span className="autocomplete-item-desc">{item.desc}</span>
                                   </button>
                                 ))}
@@ -2015,11 +2284,11 @@ export default function App() {
                               const slashMatch = textBefore.match(/\/(\w*)$/);
                               if (atMatch) {
                                 setAutocompleteType("@");
-                                setAutocompleteQuery(atMatch[0]);
+                                setAutocompleteQuery(atMatch[1] ?? "");
                                 setAutocompleteIndex(0);
                               } else if (slashMatch && (textBefore === slashMatch[0] || textBefore[textBefore.length - slashMatch[0].length - 1] === " " || textBefore[textBefore.length - slashMatch[0].length - 1] === "\n")) {
                                 setAutocompleteType("/");
-                                setAutocompleteQuery(slashMatch[0]);
+                                setAutocompleteQuery(slashMatch[1] ?? "");
                                 setAutocompleteIndex(0);
                               } else {
                                 setAutocompleteType(null);
@@ -2030,6 +2299,26 @@ export default function App() {
                             rows={3}
                             onKeyDown={(event) => {
                               if (autocompleteType) {
+                                if (autocompleteType === "/" && (event.key === " " || (event.key === "Enter" && !event.shiftKey))) {
+                                  const slashItems = [
+                                    { label: "/plan", insert: "plan" },
+                                    { label: "/review", insert: "review" },
+                                    { label: "/fix", insert: "fix" },
+                                    { label: "/explain", insert: "explain" },
+                                    { label: "/test", insert: "test" },
+                                    { label: "/refactor", insert: "refactor" },
+                                  ];
+                                  const exact = slashItems.find((i) => i.label.slice(1).toLowerCase() === autocompleteQuery.toLowerCase());
+                                  if (exact) {
+                                    event.preventDefault();
+                                    const before = prompt.slice(0, prompt.lastIndexOf("/"));
+                                    setPrompt(before + exact.insert + " ");
+                                    setAutocompleteType(null);
+                                    setAutocompleteQuery("");
+                                    setAutocompleteIndex(0);
+                                    return;
+                                  }
+                                }
                                 if (event.key === "Escape") {
                                   event.preventDefault();
                                   setAutocompleteType(null);
@@ -2100,7 +2389,9 @@ export default function App() {
                               localStorage.setItem("ac:provider", next);
                               // Auto-select first enabled model for this provider
                               const p = snapshot?.providers.find((p) => p.label === next);
-                              const firstEnabled = (p?.models ?? []).find((m) => !disabledModels[m]);
+                              const enabled = (p?.models ?? []).filter((m) => !disabledModels[m]);
+                              const filtered = enabled.filter((m) => modelMatchesMode(m, mode));
+                              const firstEnabled = (filtered[0] ?? enabled[0]) || "";
                               if (firstEnabled) {
                                 setModel(firstEnabled);
                                 localStorage.setItem("ac:model", firstEnabled);
@@ -2114,6 +2405,30 @@ export default function App() {
                         </label>
                         <span className="dock-tray-sep">/</span>
                         <label className="dock-tray-select">
+                          <span>{mode}</span>
+                          <select
+                            value={mode}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setMode(next);
+                              localStorage.setItem("ac:mode", next);
+                              const p = snapshot?.providers.find((p) => p.label === provider);
+                              const enabled = (p?.models ?? []).filter((m) => !disabledModels[m]);
+                              const filtered = enabled.filter((m) => modelMatchesMode(m, next));
+                              const first = (filtered[0] ?? enabled[0]) || "";
+                              if (first) {
+                                setModel(first);
+                                localStorage.setItem("ac:model", first);
+                              }
+                            }}
+                          >
+                            {["general", "code", "reasoning", "fast"].map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <span className="dock-tray-sep">/</span>
+                        <label className="dock-tray-select">
                           <span>{prettifyModelId(model)}</span>
                           <select
                             value={model}
@@ -2122,11 +2437,15 @@ export default function App() {
                               localStorage.setItem("ac:model", e.target.value);
                             }}
                           >
-                            {(snapshot?.providers.find((p) => p.label === provider)?.models ?? [])
-                              .filter((m) => !disabledModels[m])
-                              .map((m) => (
+                            {(() => {
+                              const all = (snapshot?.providers.find((p) => p.label === provider)?.models ?? [])
+                                .filter((m) => !disabledModels[m]);
+                              const filtered = all.filter((m) => modelMatchesMode(m, mode));
+                              const list = filtered.length > 0 ? filtered : all;
+                              return list.map((m) => (
                                 <option key={m} value={m}>{prettifyModelId(m)}</option>
-                              ))}
+                              ));
+                            })()}
                           </select>
                         </label>
                       </div>
@@ -2314,34 +2633,42 @@ export default function App() {
                     </button>
                   </div>
 
-                  <div className="context-summary-row">
-                    <span>{activeFile?.language ?? ""}</span>
-                    <span>{changedFiles.length} changed</span>
-                  </div>
+                  {activeFile ? (
+                    <div className="context-summary-row">
+                      <span>{activeFile.language}</span>
+                      <span>{changedFiles.length} changed</span>
+                    </div>
+                  ) : null}
 
-                  <div className="tab-strip compact-scroll">
-                    {openFiles.map((file) => (
-                      <button
-                        key={file.id}
-                        className={`tab-chip${activeFile?.id === file.id ? " active" : ""}`}
-                        type="button"
-                        onClick={() => setActiveFileId(file.id)}
-                      >
-                        <span>{file.name}</span>
-                        {openFiles.length > 1 ? (
-                          <span
+                  {openFiles.length > 0 ? (
+                    <div className="tab-strip compact-scroll">
+                      {openFiles.map((file) => (
+                        <div
+                          key={file.id}
+                          className={`tab-chip${activeFile?.id === file.id ? " active" : ""}`}
+                        >
+                          <button
+                            className="tab-chip-main"
+                            type="button"
+                            onClick={() => setActiveFileId(file.id)}
+                          >
+                            <span>{file.name}</span>
+                          </button>
+                          <button
                             className="tab-chip-close"
+                            type="button"
+                            aria-label={`Close ${file.name}`}
                             onClick={(event) => {
                               event.stopPropagation();
                               closeFile(file.id);
                             }}
                           >
-                            x
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                  </div>
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
 
                   <div className="editor-layout">
                     <div className="editor-pane">
@@ -2373,59 +2700,80 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="editor-sidebar compact-scroll">
-                      {groupedFiles.map((group) => {
-                        const expanded = expandedGroups[group.label] ?? true;
-                        return (
-                          <div key={group.label} className="tree-group">
-                            <button
-                              className="tree-header"
-                              type="button"
-                              onClick={() =>
-                                setExpandedGroups((current) => ({
-                                  ...current,
-                                  [group.label]: !expanded
-                                }))
-                              }
-                            >
-                              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                              <span>{group.label}</span>
-                            </button>
-                            {expanded ? (
-                              <div className="tree-items">
-                                {group.items.map((file) => {
-                                  const dirty = changedFiles.some((item) => item.id === file.id);
-                                  return (
-                                    <button
-                                      key={file.id}
-                                      className={`tree-item${activeFile?.id === file.id ? " active" : ""}`}
-                                      type="button"
-                                      onClick={() => openFile(file.id)}
-                                    >
-                                      <FileCode2 size={12} />
-                                      <span>{file.path.replace(`${group.label}/`, "")}</span>
-                                      {dirty ? <span className="dirty-dot" /> : null}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
+                    <div className="editor-sidebar">
+                      <div className="tree-search">
+                        <Search size={12} />
+                        <input
+                          type="text"
+                          placeholder="Filter files..."
+                          value={treeFilter}
+                          onChange={(e) => setTreeFilter(e.target.value)}
+                        />
+                      </div>
+                      <div className="tree-root compact-scroll">
+                        {(filteredTree?.children ?? []).map((node) => {
+                          const renderNode = (item: TreeNode, depth: number) => {
+                            const key = item.path;
+                            if (item.type === "folder") {
+                              const expanded = expandedGroups[key] ?? true;
+                              return (
+                                <div key={key} className="tree-group">
+                                  <button
+                                    className="tree-header"
+                                    type="button"
+                                    style={{ paddingLeft: 8 + depth * 12 }}
+                                    onClick={() =>
+                                      setExpandedGroups((current) => ({
+                                        ...current,
+                                        [key]: !expanded
+                                      }))
+                                    }
+                                  >
+                                    {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                    <span>{item.name}</span>
+                                  </button>
+                                  {expanded && item.children ? (
+                                    <div className="tree-items">
+                                      {item.children.map((child) => renderNode(child, depth + 1))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            }
+                            const file = item.file!;
+                            const dirty = changedFiles.some((f) => f.id === file.id);
+                            return (
+                              <button
+                                key={file.id}
+                                className={`tree-item${activeFile?.id === file.id ? " active" : ""}`}
+                                type="button"
+                                style={{ paddingLeft: 20 + depth * 12 }}
+                                onClick={() => openFile(file.id)}
+                              >
+                                <FileCode2 size={12} />
+                                <span>{file.path.split("/").pop()}</span>
+                                {dirty ? <span className="dirty-dot" /> : null}
+                              </button>
+                            );
+                          };
+                          return renderNode(node, 0);
+                        })}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="context-footer">
-                    <button className="pane-button" type="button" onClick={() => void loadWorkspace()}>
-                      <Search size={12} />
-                      <span>Refresh</span>
-                    </button>
-                    <button className="titlebar-action primary" type="button" onClick={() => void handleSaveFile()}>
-                      {saving ? <LoaderCircle className="spin" size={13} /> : <FileCode2 size={13} />}
-                      <span>{saving ? "Saving" : "Save"}</span>
-                    </button>
-                  </div>
+                  {activeFile ? (
+                    <div className="context-footer">
+                      <button className="pane-button" type="button" onClick={() => void loadWorkspace()}>
+                        <Search size={12} />
+                        <span>Refresh</span>
+                      </button>
+                      <button className="titlebar-action primary" type="button" onClick={() => void handleSaveFile()}>
+                        {saving ? <LoaderCircle className="spin" size={13} /> : <FileCode2 size={13} />}
+                        <span>{saving ? "Saving" : "Save"}</span>
+                      </button>
+                    </div>
+                  ) : null}
                 </section>
               </Panel>
             </>
@@ -2665,6 +3013,212 @@ export default function App() {
                   <strong>Electron</strong>
                 </div>
               </div>
+
+              {/* --- CI Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">CI</h3>
+                <p className="overlay-section-desc">Detected CI context from environment variables.</p>
+                <div className="setting-row">
+                  <span>Provider</span>
+                  <strong>{ciContext?.provider ?? "unknown"}</strong>
+                </div>
+                {ciContext?.projectPath ? (
+                  <div className="setting-row">
+                    <span>Project</span>
+                    <strong>{ciContext.projectPath}</strong>
+                  </div>
+                ) : null}
+                {ciContext?.pipelineId ? (
+                  <div className="setting-row">
+                    <span>Pipeline</span>
+                    <strong>{ciContext.pipelineId}</strong>
+                  </div>
+                ) : null}
+                {ciContext?.jobId ? (
+                  <div className="setting-row">
+                    <span>Job</span>
+                    <strong>{ciContext.jobId}</strong>
+                  </div>
+                ) : null}
+                {ciContext?.branch ? (
+                  <div className="setting-row">
+                    <span>Branch</span>
+                    <strong>{ciContext.branch}</strong>
+                  </div>
+                ) : null}
+                {ciContext?.mergeRequestIid ? (
+                  <div className="setting-row">
+                    <span>Merge Request</span>
+                    <strong>!{ciContext.mergeRequestIid}</strong>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* --- Access Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Access</h3>
+                <p className="overlay-section-desc">If a server password is enabled, enter it here.</p>
+                <div className="auth-key-input-row">
+                  <div className="auth-key-input-wrap">
+                    <Key size={12} className="auth-key-icon" />
+                    <input
+                      type="password"
+                      value={webPassword}
+                      onChange={(e) => {
+                        setWebPassword(e.target.value);
+                        localStorage.setItem("ac:webPassword", e.target.value);
+                      }}
+                      placeholder="Server password"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* --- Config Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Config</h3>
+                <p className="overlay-section-desc">Resolved from global + project config files (JSONC).</p>
+                <div className="setting-row">
+                  <span>Global</span>
+                  <strong>{snapshot?.configPaths?.globalPath ?? "—"}</strong>
+                </div>
+                <div className="setting-row">
+                  <span>Project</span>
+                  <strong>{snapshot?.configPaths?.projectPath ?? "—"}</strong>
+                </div>
+                <div className="setting-row">
+                  <button className="auth-save-btn" type="button" onClick={() => void reloadConfig()}>
+                    <RotateCcw size={12} />
+                    <span>Reload config</span>
+                  </button>
+                </div>
+                <pre className="config-json">
+                  {JSON.stringify(snapshot?.config ?? {}, null, 2)}
+                </pre>
+              </div>
+
+              {/* --- Skills Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Skills</h3>
+                <p className="overlay-section-desc">
+                  Skills discovered from standard locations and configured paths.
+                </p>
+                {skills.length === 0 ? (
+                  <div className="empty-inline">No skills found</div>
+                ) : (
+                  <div className="skills-list">
+                    {skills.map((skill) => (
+                      <button
+                        key={skill.id}
+                        className={`skills-row${activeSkill?.id === skill.id ? " active" : ""}`}
+                        type="button"
+                        onClick={() => void openSkill(skill)}
+                      >
+                        <span>{skill.name}</span>
+                        <small>{skill.path}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {activeSkill ? (
+                  <div className="skill-preview">
+                    <div className="skill-preview-header">
+                      <strong>{activeSkill.name}</strong>
+                      <small>{activeSkill.path}</small>
+                    </div>
+                    {skillLoading ? (
+                      <div className="empty-inline">Loading...</div>
+                    ) : (
+                      <pre className="skill-preview-body">{skillContent}</pre>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              {/* --- Agents Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Agents</h3>
+                <p className="overlay-section-desc">Switch the system focus for this session.</p>
+                {agents.length === 0 ? (
+                  <div className="empty-inline">No agents available</div>
+                ) : (
+                  <div className="agents-list">
+                    {agents.map((agent) => (
+                      <button
+                        key={agent.id}
+                        className={`agents-row${activeAgentId === agent.id ? " active" : ""}`}
+                        type="button"
+                        onClick={() => void switchAgent(agent.id)}
+                      >
+                        <span>{agent.label}</span>
+                        <small>{agent.description ?? agent.id}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* --- Plugins Section --- */}
+              <div className="overlay-section">
+                <h3 className="overlay-section-title">Plugins</h3>
+                <p className="overlay-section-desc">Local plugins loaded from configured directories.</p>
+                <div className="setting-row">
+                  <button className="auth-save-btn" type="button" onClick={() => void reloadPlugins()}>
+                    <RotateCcw size={12} />
+                    <span>Reload plugins</span>
+                  </button>
+                </div>
+                {plugins.length === 0 ? (
+                  <div className="empty-inline">No plugins loaded</div>
+                ) : (
+                  <div className="plugins-list">
+                    {plugins.map((plugin) => (
+                      <div key={plugin.id} className="plugins-row">
+                        <span>{plugin.label}</span>
+                        <small>{plugin.version ?? plugin.id}</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===== Permission request modal ===== */}
+      {pendingPermissions.length > 0 ? (
+        <div className="overlay-backdrop" onClick={() => undefined}>
+          <div className="permission-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="permission-header">
+              <CircleAlert size={14} />
+              <span>Permission required</span>
+            </div>
+            <p>
+              Alpha Code wants to run <strong>{pendingPermissions[0]?.action}</strong>.
+            </p>
+            <div className="permission-actions">
+              <button
+                className="permission-btn"
+                type="button"
+                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, false, false)}
+              >
+                Deny
+              </button>
+              <button
+                className="permission-btn"
+                type="button"
+                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, true, false)}
+              >
+                Allow once
+              </button>
+              <button
+                className="permission-btn primary"
+                type="button"
+                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, true, true)}
+              >
+                Allow for session
+              </button>
             </div>
           </div>
         </div>
@@ -2987,6 +3541,14 @@ export default function App() {
         <div className="toast-error">
           <span>{error}</span>
           <button className="toast-close" type="button" onClick={() => setError("")}>
+            <X size={12} />
+          </button>
+        </div>
+      ) : null}
+      {shareNotice ? (
+        <div className="toast-success">
+          <span>{shareNotice}</span>
+          <button className="toast-close" type="button" onClick={() => setShareNotice("")}>
             <X size={12} />
           </button>
         </div>

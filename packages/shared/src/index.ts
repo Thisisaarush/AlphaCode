@@ -71,7 +71,8 @@ export const sessionSummarySchema = z.object({
   status: sessionStatusSchema,
   provider: z.string(),
   model: z.string(),
-  updatedAt: z.string()
+  updatedAt: z.string(),
+  sharedId: z.string().optional()
 });
 
 export const sessionMessageSchema = z.object({
@@ -111,11 +112,87 @@ export const promptSuggestionSchema = z.object({
   label: z.string()
 });
 
+/* ================================================================
+   Config schema (Phase 0 scaffolding)
+   ================================================================ */
+
+export const permissionLevelSchema = z.enum(["allow", "ask", "deny"]);
+
+export const toolPermissionsSchema = z.object({
+  run_command: permissionLevelSchema.optional(),
+  read_file: permissionLevelSchema.optional(),
+  list_files: permissionLevelSchema.optional(),
+  write_file: permissionLevelSchema.optional()
+});
+
+export const appConfigSchema = z.object({
+  version: z.number().int().optional(),
+  permissions: z.object({
+    tools: toolPermissionsSchema.optional(),
+    plugins: permissionLevelSchema.optional()
+  }).optional(),
+  plugins: z.object({
+    enabled: z.boolean().optional(),
+    allowList: z.array(z.string()).optional(),
+    denyList: z.array(z.string()).optional(),
+    directories: z.array(z.string()).optional()
+  }).optional(),
+  agents: z.object({
+    enabled: z.boolean().optional(),
+    defaultAgent: z.string().optional(),
+    list: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      description: z.string().optional(),
+      systemPrompt: z.string().optional()
+    })).optional()
+  }).optional(),
+  skills: z.object({
+    enabled: z.boolean().optional(),
+    paths: z.array(z.string()).optional()
+  }).optional(),
+  sharing: z.object({
+    mode: z.enum(["off", "manual", "auto"]).optional(),
+    localOnly: z.boolean().optional()
+  }).optional()
+});
+
+export const configSchema = appConfigSchema;
+
 export const workspaceSnapshotSchema = z.object({
   workspace: workspaceSchema,
   sessions: z.array(sessionSummarySchema),
   suggestions: z.array(promptSuggestionSchema),
   recentRuns: z.array(commandRunSchema),
+  config: appConfigSchema.optional(),
+  configPaths: z.object({
+    globalPath: z.string(),
+    projectPath: z.string()
+  }).optional(),
+  skills: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    path: z.string()
+  })).optional(),
+  agents: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    description: z.string().optional()
+  })).optional(),
+  activeAgentId: z.string().optional(),
+  plugins: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    version: z.string().optional()
+  })).optional(),
+  ci: z.object({
+    provider: z.enum(["gitlab", "github", "unknown"]),
+    jobId: z.string().optional(),
+    pipelineId: z.string().optional(),
+    projectPath: z.string().optional(),
+    mergeRequestIid: z.string().optional(),
+    branch: z.string().optional()
+  }).optional(),
   providers: z.array(
     z.object({
       id: providerIdSchema,
@@ -213,3 +290,6 @@ export type AuthStatusResponse = z.infer<typeof authStatusResponseSchema>;
 export type SaveKeyInput = z.infer<typeof saveKeyInputSchema>;
 export type GitHubDeviceCodeResponse = z.infer<typeof githubDeviceCodeResponseSchema>;
 export type GitHubPollResponse = z.infer<typeof githubPollResponseSchema>;
+
+export type PermissionLevel = z.infer<typeof permissionLevelSchema>;
+export type AppConfig = z.infer<typeof appConfigSchema>;

@@ -8,6 +8,16 @@ import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import nodePty from "node-pty";
 import { WebSocketServer, WebSocket } from "ws";
+import { loadConfig } from "./config.js";
+import { registerTool } from "./registry.js";
+import { getToolPermission, getPluginPermission, type ToolAction } from "./permissions.js";
+import { listSkills, readSkill, type SkillEntry } from "./skills.js";
+import { resolveAgents, getDefaultAgent, getAgentById } from "./agents.js";
+import { loadPlugins, type PluginRuntime } from "./plugins.js";
+import { loadShares, createShare, getShare, deleteShare } from "./sharing.js";
+import { detectCi } from "./ci.js";
+import { logger } from "./logger.js";
+import { decryptString, encryptString, isEncryptionEnabled } from "./crypto.js";
 import {
   APP_NAME,
   appendMessageSchema,
@@ -17,6 +27,7 @@ import {
   saveKeyInputSchema,
   workspaceSnapshotSchema,
   type AuthMethod,
+  type AppConfig,
   type CommandRun,
   type FileEntry,
   type ProviderId,
@@ -39,6 +50,15 @@ const allowedExtensions = new Set([
 
 const ignoredDirectories = new Set([".git", "node_modules", "dist", ".turbo", ".vite"]);
 const textEncoder = new TextEncoder();
+const MAX_WORKSPACE_FILE_BYTES = Number(process.env.ALPHA_CODE_MAX_FILE_BYTES ?? 250_000);
+
+const webPassword = process.env.ALPHA_CODE_WEB_PASSWORD ?? "";
+const allowedOrigins = new Set<string>(
+  (process.env.ALPHA_CODE_ALLOWED_ORIGINS ?? "http://127.0.0.1:3000,http://localhost:3000")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean)
+);
 
 const promptSuggestions = [
   { id: "fix", label: "Find what is broken in the active file" },
@@ -46,8 +66,23 @@ const promptSuggestions = [
   { id: "run", label: "Run the web and desktop apps locally" }
 ];
 
+let resolvedConfig: AppConfig | null = null;
+let resolvedConfigPaths: { globalPath: string; projectPath: string } | null = null;
+let activeAgentId: string = "default";
+let pluginRuntime: PluginRuntime | null = null;
+const ciContext = detectCi();
+
+// Per-session tool approvals (in-memory, session-scoped)
+const sessionToolApprovals = new Map<string, Set<ToolAction>>();
+// Pending approval promises keyed by toolCallId
+const pendingToolApprovals = new Map<string, {
+  sessionId: string;
+  action: ToolAction;
+  resolve: (allowed: boolean) => void;
+}>();
+
 /** Server-side session storage — extends the wire type with workspace tagging */
-type StoredSession = SessionDetail & { workspace?: string };
+type StoredSession = SessionDetail & { workspace?: string; sharedId?: string };
 
 const sessionStore = new Map<string, StoredSession>();
 const commandRunStore = new Map<string, CommandRun>();
@@ -94,6 +129,30 @@ function getTerminalEmitter(runId: string): EventEmitter {
 
 const storedKeys = new Map<string, string>();
 
+/* ================================================================
+   Persistence versioning helpers
+   ================================================================ */
+
+type PersistedPayload<T> = {
+  version: number;
+  data: T;
+  updatedAt?: string;
+};
+
+const PERSIST_VERSION = 1;
+
+function wrapPersisted<T>(data: T): PersistedPayload<T> {
+  return { version: PERSIST_VERSION, data, updatedAt: new Date().toISOString() };
+}
+
+function unwrapPersisted<T>(raw: unknown, fallback: T): { data: T; version: number } {
+  if (raw && typeof raw === "object" && "version" in raw && "data" in raw) {
+    const payload = raw as PersistedPayload<T>;
+    return { data: payload.data ?? fallback, version: Number(payload.version ?? 0) || 0 };
+  }
+  return { data: (raw as T) ?? fallback, version: 0 };
+}
+
 /* ----------------------------------------------------------------
    Persistent auth storage — ~/.alpha-code/auth.json
    Stores GitHub OAuth token and manually-entered API keys so they
@@ -105,22 +164,32 @@ const AUTH_FILE = path.join(AUTH_DIR, "auth.json");
 async function loadPersistedAuth(): Promise<void> {
   try {
     const raw = await readFile(AUTH_FILE, "utf8");
-    const data = JSON.parse(raw) as Record<string, string>;
+    const parsed = JSON.parse(raw) as unknown;
+    const { data, version } = unwrapPersisted<Record<string, string>>(parsed, {});
     for (const [key, value] of Object.entries(data)) {
       if (typeof value === "string" && value.length > 0) {
-        storedKeys.set(key, value);
+        const decrypted = decryptString(value);
+        if (decrypted === null) {
+          logger.warn("auth.decrypt_failed", { key });
+          continue;
+        }
+        storedKeys.set(key, decrypted);
       }
     }
     // Migrate old github-oauth key to copilot-oauth
     if (storedKeys.has("github-oauth") && !storedKeys.has("copilot-oauth")) {
       storedKeys.set("copilot-oauth", storedKeys.get("github-oauth")!);
       storedKeys.delete("github-oauth");
-      console.log("[auth] Migrated github-oauth → copilot-oauth");
+      logger.info("auth.migrated", { from: "github-oauth", to: "copilot-oauth" });
     }
-    console.log(`[auth] Loaded ${Object.keys(data).length} persisted key(s) from ${AUTH_FILE}`);
+    logger.info("auth.loaded", { count: Object.keys(data).length, file: AUTH_FILE });
+    if (version === 0) {
+      // Upgrade legacy format on next persist
+      void persistAuth();
+    }
   } catch {
     // File doesn't exist or is invalid — that's fine, first run
-    console.log("[auth] No persisted auth found (first run)");
+    logger.info("auth.missing", { file: AUTH_FILE });
   }
 }
 
@@ -130,12 +199,13 @@ async function persistAuth(): Promise<void> {
     await mkdir(AUTH_DIR, { recursive: true });
     const toSave: Record<string, string> = {};
     for (const [key, value] of storedKeys.entries()) {
-      toSave[key] = value;
+      toSave[key] = isEncryptionEnabled() ? encryptString(value) : value;
     }
-    await writeFile(AUTH_FILE, JSON.stringify(toSave, null, 2), "utf8");
-    console.log(`[auth] Persisted ${Object.keys(toSave).length} key(s) to ${AUTH_FILE}`);
+    const wrapped = wrapPersisted(toSave);
+    await writeFile(AUTH_FILE, JSON.stringify(wrapped, null, 2), "utf8");
+    logger.info("auth.persisted", { count: Object.keys(toSave).length, file: AUTH_FILE });
   } catch (err) {
-    console.error("[auth] Failed to persist auth:", err instanceof Error ? err.message : err);
+    logger.error("auth.persist_failed", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -152,7 +222,8 @@ const SESSION_PERSIST_DEBOUNCE_MS = 500;
 async function loadPersistedSessions(): Promise<void> {
   try {
     const raw = await readFile(SESSIONS_FILE, "utf8");
-    const data = JSON.parse(raw) as Record<string, StoredSession>;
+    const parsed = JSON.parse(raw) as unknown;
+    const { data, version } = unwrapPersisted<Record<string, StoredSession>>(parsed, {});
     let count = 0;
     for (const [id, session] of Object.entries(data)) {
       if (session && typeof session === "object" && session.id) {
@@ -160,9 +231,12 @@ async function loadPersistedSessions(): Promise<void> {
         count++;
       }
     }
-    console.log(`[sessions] Loaded ${count} persisted session(s) from ${SESSIONS_FILE}`);
+    logger.info("sessions.loaded", { count, file: SESSIONS_FILE });
+    if (version === 0) {
+      persistSessions();
+    }
   } catch {
-    console.log("[sessions] No persisted sessions found (first run)");
+    logger.info("sessions.missing", { file: SESSIONS_FILE });
   }
 }
 
@@ -175,10 +249,11 @@ function persistSessions(): void {
       for (const [id, session] of sessionStore.entries()) {
         toSave[id] = session;
       }
-      await writeFile(SESSIONS_FILE, JSON.stringify(toSave, null, 2), "utf8");
-      console.log(`[sessions] Persisted ${Object.keys(toSave).length} session(s) to ${SESSIONS_FILE}`);
+      const wrapped = wrapPersisted(toSave);
+      await writeFile(SESSIONS_FILE, JSON.stringify(wrapped, null, 2), "utf8");
+      logger.info("sessions.persisted", { count: Object.keys(toSave).length, file: SESSIONS_FILE });
     } catch (err) {
-      console.error("[sessions] Failed to persist sessions:", err instanceof Error ? err.message : err);
+      logger.error("sessions.persist_failed", { error: err instanceof Error ? err.message : String(err) });
     }
   }, SESSION_PERSIST_DEBOUNCE_MS);
 }
@@ -201,22 +276,27 @@ let recentProjects: RecentProject[] = [];
 async function loadPersistedProjects(): Promise<void> {
   try {
     const raw = await readFile(PROJECTS_FILE, "utf8");
-    const data = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as unknown;
+    const { data, version } = unwrapPersisted<RecentProject[]>(parsed, []);
     if (Array.isArray(data)) {
       recentProjects = data;
-      console.log(`[projects] Loaded ${recentProjects.length} recent project(s) from ${PROJECTS_FILE}`);
+      logger.info("projects.loaded", { count: recentProjects.length, file: PROJECTS_FILE });
+    }
+    if (version === 0) {
+      void persistProjects();
     }
   } catch {
-    console.log("[projects] No persisted projects found (first run)");
+    logger.info("projects.missing", { file: PROJECTS_FILE });
   }
 }
 
 async function persistProjects(): Promise<void> {
   try {
     await mkdir(AUTH_DIR, { recursive: true });
-    await writeFile(PROJECTS_FILE, JSON.stringify(recentProjects, null, 2), "utf8");
+    const wrapped = wrapPersisted(recentProjects);
+    await writeFile(PROJECTS_FILE, JSON.stringify(wrapped, null, 2), "utf8");
   } catch (err) {
-    console.error("[projects] Failed to persist projects:", err instanceof Error ? err.message : err);
+    logger.error("projects.persist_failed", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -294,7 +374,7 @@ async function startGitHubDeviceFlow(): Promise<{
   expiresIn: number;
   interval: number;
 }> {
-  console.log(`[auth] Starting GitHub Copilot device flow with client_id: ${COPILOT_CLIENT_ID}`);
+  logger.info(`[auth] Starting GitHub Copilot device flow with client_id: ${COPILOT_CLIENT_ID}`);
 
   const response = await fetch("https://github.com/login/device/code", {
     method: "POST",
@@ -309,7 +389,7 @@ async function startGitHubDeviceFlow(): Promise<{
   });
 
   const responseText = await response.text();
-  console.log(`[auth] GitHub device/code response (${response.status}): ${responseText.slice(0, 500)}`);
+  logger.info(`[auth] GitHub device/code response (${response.status}): ${responseText.slice(0, 500)}`);
 
   if (!response.ok) {
     throw new Error(`GitHub device code request failed: HTTP ${response.status} ${responseText.slice(0, 300)}`);
@@ -339,7 +419,7 @@ async function startGitHubDeviceFlow(): Promise<{
     interval: Number(data.interval) || 5
   };
 
-  console.log(`[auth] Device flow started. User code: ${githubDeviceFlow.userCode}, URI: ${githubDeviceFlow.verificationUri}`);
+  logger.info(`[auth] Device flow started. User code: ${githubDeviceFlow.userCode}, URI: ${githubDeviceFlow.verificationUri}`);
 
   return {
     deviceCode: githubDeviceFlow.deviceCode,
@@ -357,7 +437,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
   interval?: number;
 }> {
   if (githubDeviceFlow && Date.now() > githubDeviceFlow.expiresAt) {
-    console.log("[auth] Device code expired");
+    logger.info("[auth] Device code expired");
     githubDeviceFlow = null;
     return { status: "expired", error: "Device code expired. Please start a new login." };
   }
@@ -377,7 +457,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
     });
 
     const responseText = await response.text();
-    console.log(`[auth] GitHub poll response (${response.status}): ${responseText.slice(0, 300)}`);
+    logger.info(`[auth] GitHub poll response (${response.status}): ${responseText.slice(0, 300)}`);
 
     if (!response.ok) {
       return { status: "error", error: `HTTP ${response.status}: ${responseText.slice(0, 200)}` };
@@ -396,7 +476,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
       storedKeys.set("copilot-oauth", oauthToken);
       invalidateModelCache("copilot");
       githubDeviceFlow = null;
-      console.log("[auth] GitHub Copilot OAuth completed — token stored as copilot-oauth");
+      logger.info("[auth] GitHub Copilot OAuth completed — token stored as copilot-oauth");
 
       // Persist the OAuth token to disk for restart survival
       void persistAuth();
@@ -413,7 +493,7 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
     if (errorCode === "slow_down") {
       // GitHub tells us to increase our interval — pass it back to client
       const newInterval = Number(data.interval) || 10;
-      console.log(`[auth] GitHub slow_down — new interval: ${newInterval}s`);
+      logger.info(`[auth] GitHub slow_down — new interval: ${newInterval}s`);
       return { status: "pending", interval: newInterval };
     }
 
@@ -434,11 +514,11 @@ async function pollGitHubDeviceFlow(deviceCode: string): Promise<{
 
     // Any other error
     const errorDesc = String(data.error_description ?? data.error ?? "Unknown error");
-    console.log(`[auth] GitHub poll error: ${errorDesc}`);
+    logger.info(`[auth] GitHub poll error: ${errorDesc}`);
     return { status: "error", error: errorDesc };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Poll failed";
-    console.error(`[auth] GitHub poll exception: ${msg}`);
+    logger.error(`[auth] GitHub poll exception: ${msg}`);
     return { status: "error", error: msg };
   }
 }
@@ -580,7 +660,7 @@ function captureCopilotRateLimits(headers: Headers) {
       reset: reset ?? copilotRateLimitCache.reset,
       updatedAt: Date.now(),
     };
-    console.log(`[copilot-ratelimit] limit=${copilotRateLimitCache.limit} used=${copilotRateLimitCache.used} remaining=${copilotRateLimitCache.remaining}`);
+    logger.info(`[copilot-ratelimit] limit=${copilotRateLimitCache.limit} used=${copilotRateLimitCache.used} remaining=${copilotRateLimitCache.remaining}`);
   }
 }
 
@@ -622,7 +702,7 @@ async function fetchOpenRouterUsage(): Promise<ProviderUsageInfo> {
 
     return { providerId: "openrouter", usagePercent, usageLabel, details, hasQuota: hasLimit };
   } catch (err) {
-    console.error("[provider-usage] OpenRouter fetch failed:", err);
+    logger.error("provider-usage.openrouter_failed", { error: err instanceof Error ? err.message : String(err) });
     return { providerId: "openrouter", usagePercent: null, usageLabel: "Error fetching", details: "Failed to fetch usage", hasQuota: false };
   }
 }
@@ -853,11 +933,11 @@ async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]>
     if (models.length > 0) {
       models = deduplicateModels(models);
       modelCache.set(config.id, { models, fetchedAt: Date.now() });
-      console.log(`[models] Fetched ${models.length} models for ${config.label}`);
+      logger.info(`[models] Fetched ${models.length} models for ${config.label}`);
       return models;
     }
   } catch (err) {
-    console.warn(`[models] Failed to fetch models for ${config.label}:`, err instanceof Error ? err.message : err);
+    logger.warn("models.fetch_failed", { provider: config.label, error: err instanceof Error ? err.message : String(err) });
   }
 
   // Fall back to static list
@@ -902,6 +982,12 @@ ALWAYS use the run_command tool when the user asks you to run something, check v
 
 The user is working in a project at: ${workspaceRoot}
 Project name: ${path.basename(workspaceRoot)}`;
+}
+
+function getAgentSystemPrompt(agentId: string): string | null {
+  const agent = getAgentById(resolvedConfig, agentId);
+  if (!agent?.systemPrompt) return null;
+  return agent.systemPrompt;
 }
 
 /** Build a compact file tree string for AI context (max ~200 entries) */
@@ -981,23 +1067,102 @@ const AI_TOOLS_OPENAI = [
   }
 ];
 
-/** Anthropic tool format */
-const AI_TOOLS_ANTHROPIC = AI_TOOLS_OPENAI.map((t) => ({
-  name: t.function.name,
-  description: t.function.description,
-  input_schema: t.function.parameters
-}));
+function buildAiToolsOpenAI() {
+  if (!pluginRuntime) return AI_TOOLS_OPENAI;
+  const pluginTools = Array.from(pluginRuntime.tools.values()).map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.id,
+      description: tool.description,
+      parameters: {
+        type: "object",
+        properties: {},
+        required: []
+      }
+    }
+  }));
+  return [...AI_TOOLS_OPENAI, ...pluginTools];
+}
 
-/** Copilot Responses API tool format (same as OpenAI but flat) */
-const AI_TOOLS_RESPONSES = AI_TOOLS_OPENAI.map((t) => ({
-  type: "function" as const,
-  name: t.function.name,
-  description: t.function.description,
-  parameters: t.function.parameters
-}));
+// Register core tools in capability registry (scaffolding for plugins/agents)
+registerTool({ id: "run_command", description: "Execute a shell command in the workspace", source: "core" });
+registerTool({ id: "read_file", description: "Read a file from the workspace", source: "core" });
+registerTool({ id: "list_files", description: "List files in a directory", source: "core" });
+registerTool({ id: "write_file", description: "Write a file to the workspace", source: "core" });
+
+function buildAiToolsAnthropic() {
+  return buildAiToolsOpenAI().map((t) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters
+  }));
+}
+
+function buildAiToolsResponses() {
+  return buildAiToolsOpenAI().map((t) => ({
+    type: "function" as const,
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters
+  }));
+}
+
+function resolveToolAction(name: string): ToolAction | null {
+  switch (name) {
+    case "run_command":
+    case "read_file":
+    case "list_files":
+    case "write_file":
+      return name;
+    default:
+      return null;
+  }
+}
+
+async function awaitToolApproval(
+  sessionId: string,
+  toolCallId: string,
+  action: ToolAction,
+  onToolEvent?: ToolEventCallback
+): Promise<boolean> {
+  if (!sessionId || !toolCallId) return false;
+
+  const approvals = sessionToolApprovals.get(sessionId);
+  if (approvals && approvals.has(action)) return true;
+
+  const allowed = await new Promise<boolean>((resolve) => {
+    const resolveOnce = (value: boolean) => {
+      pendingToolApprovals.delete(toolCallId);
+      resolve(value);
+    };
+    onToolEvent?.({ type: "permission_request", toolCallId, toolName: action, action });
+    // Timeout after 60s
+    const timer = setTimeout(() => {
+      resolveOnce(false);
+    }, 60_000);
+    // Ensure timeout cleared on manual resolve
+    const originalResolve = resolveOnce;
+    pendingToolApprovals.set(toolCallId, {
+      sessionId,
+      action,
+      resolve: (value: boolean) => {
+        clearTimeout(timer);
+        originalResolve(value);
+      }
+    });
+  });
+
+  return allowed;
+}
 
 /** Execute a tool call and return the result string */
-async function executeTool(name: string, argsJson: string, toolCallId?: string): Promise<{ result: string; isError: boolean; fileChange?: FileChange }> {
+async function executeTool(
+  name: string,
+  argsJson: string,
+  toolCallId?: string,
+  sessionId?: string,
+  onToolEvent?: ToolEventCallback
+): Promise<{ result: string; isError: boolean; fileChange?: FileChange }> {
   let args: Record<string, unknown>;
   try {
     args = JSON.parse(argsJson);
@@ -1005,11 +1170,26 @@ async function executeTool(name: string, argsJson: string, toolCallId?: string):
     return { result: `Error: Invalid JSON arguments: ${argsJson}`, isError: true };
   }
 
+  const action = resolveToolAction(name);
+  const isPluginTool = !action && pluginRuntime?.tools.has(name);
+  if ((action || isPluginTool) && sessionId) {
+    const permission = action ? getToolPermission(resolvedConfig, action) : getPluginPermission(resolvedConfig);
+    if (permission === "deny") {
+      return { result: `Error: Permission denied for ${name}`, isError: true };
+    }
+    if (permission === "ask") {
+      const allowed = await awaitToolApproval(sessionId, toolCallId || "", (action ?? name) as ToolAction, onToolEvent);
+      if (!allowed) {
+        return { result: `Error: Permission required for ${name}`, isError: true };
+      }
+    }
+  }
+
   switch (name) {
     case "run_command": {
       const command = String(args.command ?? "");
       if (!command) return { result: "Error: No command provided", isError: true };
-      console.log(`[tool] run_command: ${command}`);
+      logger.info(`[tool] run_command: ${command}`);
       try {
         const output = execSync(command, {
           cwd: workspaceRoot,
@@ -1033,7 +1213,7 @@ async function executeTool(name: string, argsJson: string, toolCallId?: string):
       if (!filePath) return { result: "Error: No path provided", isError: true };
       const absPath = path.resolve(workspaceRoot, filePath);
       if (!absPath.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
-      console.log(`[tool] read_file: ${filePath}`);
+      logger.info(`[tool] read_file: ${filePath}`);
       try {
         const content = await readFile(absPath, "utf8");
         // Truncate very large files
@@ -1049,7 +1229,7 @@ async function executeTool(name: string, argsJson: string, toolCallId?: string):
       const dirPath = String(args.path ?? ".");
       const absDir = path.resolve(workspaceRoot, dirPath);
       if (!absDir.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
-      console.log(`[tool] list_files: ${dirPath}`);
+      logger.info(`[tool] list_files: ${dirPath}`);
       try {
         const entries = await readdir(absDir, { withFileTypes: true });
         const lines = entries
@@ -1066,7 +1246,7 @@ async function executeTool(name: string, argsJson: string, toolCallId?: string):
       if (!filePath) return { result: "Error: No path provided", isError: true };
       const absPath = path.resolve(workspaceRoot, filePath);
       if (!absPath.startsWith(workspaceRoot)) return { result: "Error: Path outside workspace", isError: true };
-      console.log(`[tool] write_file: ${filePath}`);
+      logger.info(`[tool] write_file: ${filePath}`);
       try {
         // Read existing file content for checkpoint/diff tracking
         let previousContent = "";
@@ -1102,8 +1282,18 @@ async function executeTool(name: string, argsJson: string, toolCallId?: string):
         return { result: `Error writing file: ${(err as Error).message}`, isError: true };
       }
     }
-    default:
+    default: {
+      if (pluginRuntime?.tools.has(name)) {
+        try {
+          const tool = pluginRuntime.tools.get(name)!;
+          const result = await tool.handler(args);
+          return { result: result || "(no output)", isError: false };
+        } catch (err) {
+          return { result: `Error: Plugin tool failed: ${(err as Error).message}`, isError: true };
+        }
+      }
       return { result: `Error: Unknown tool: ${name}`, isError: true };
+    }
   }
 }
 
@@ -1141,8 +1331,9 @@ async function callAI(
 
   // Build messages with system prompt, workspace file tree, and optional file context
   const basePrompt = getSystemPrompt();
+  const agentPrompt = getAgentSystemPrompt(activeAgentId);
   const fileTree = await getWorkspaceFileTree();
-  let systemContent = basePrompt + fileTree;
+  let systemContent = basePrompt + fileTree + (agentPrompt ? `\n\nAgent focus:\n${agentPrompt}` : "");
   if (fileContext) {
     systemContent += `\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``;
   }
@@ -1162,7 +1353,7 @@ async function callAI(
     return await callOpenAICompatible(config, apiKey, model, chatMessages);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[ai] ${config.label} error:`, message);
+    logger.error("ai.call_failed", { provider: config.label, error: message });
 
     return `[Error] ${config.label} API call failed: ${message}`;
   }
@@ -1194,7 +1385,7 @@ async function callOpenAICompatible(
     temperature: 0.3
   });
 
-  console.log(`[ai] Calling ${config.label} (${model}) at ${url}`);
+  logger.info(`[ai] Calling ${config.label} (${model}) at ${url}`);
   const response = await fetch(url, { method: "POST", headers, body });
 
   if (!response.ok) {
@@ -1237,7 +1428,7 @@ async function callCopilot(
     temperature: 0.3
   });
 
-  console.log(`[ai] Calling ${config.label} (${model}) at ${url}`);
+  logger.info(`[ai] Calling ${config.label} (${model}) at ${url}`);
   const response = await fetch(url, { method: "POST", headers, body });
 
   if (!response.ok) {
@@ -1283,7 +1474,7 @@ async function callAnthropic(
     messages: chatMessages
   });
 
-  console.log(`[ai] Calling ${config.label} (${model}) at ${url}`);
+  logger.info(`[ai] Calling ${config.label} (${model}) at ${url}`);
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -1447,11 +1638,11 @@ async function callOpenAICompatibleStream(
     temperature: 0.3,
     stream: true,
     stream_options: { include_usage: true },
-    tools: AI_TOOLS_OPENAI,
+    tools: buildAiToolsOpenAI(),
     tool_choice: "auto"
   });
 
-  console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
+  logger.info(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
   const response = await fetch(url, { method: "POST", headers, body, signal });
 
   if (!response.ok) {
@@ -1548,7 +1739,7 @@ async function callCopilotStream(
       input,
       stream: true,
       max_output_tokens: 16384,
-      tools: AI_TOOLS_RESPONSES,
+      tools: buildAiToolsResponses(),
     };
 
     // Reasoning models: no temperature, add reasoning config
@@ -1560,7 +1751,7 @@ async function callCopilotStream(
 
     const body = JSON.stringify(bodyObj);
 
-    console.log(`[ai-stream] Calling ${config.label} (${model}) via Responses API at ${url}`);
+    logger.info(`[ai-stream] Calling ${config.label} (${model}) via Responses API at ${url}`);
     const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
 
     // Capture rate limit headers for usage tracking
@@ -1649,7 +1840,7 @@ async function callCopilotStream(
       max_tokens: 16384,
       stream: true,
       stream_options: { include_usage: true },
-      tools: AI_TOOLS_OPENAI,
+      tools: buildAiToolsOpenAI(),
       tool_choice: "auto",
     };
 
@@ -1660,7 +1851,7 @@ async function callCopilotStream(
 
     const body = JSON.stringify(bodyObj);
 
-    console.log(`[ai-stream] Calling ${config.label} (${model}) via Chat Completions at ${url}`);
+    logger.info(`[ai-stream] Calling ${config.label} (${model}) via Chat Completions at ${url}`);
     const response = await fetch(url, { method: "POST", headers: copilotHeaders, body, signal });
 
     // Capture rate limit headers for usage tracking
@@ -1755,11 +1946,11 @@ async function callAnthropicStream(
     system: systemMessage?.content ?? getSystemPrompt(),
     messages: chatMessages,
     stream: true,
-    tools: AI_TOOLS_ANTHROPIC,
+    tools: buildAiToolsAnthropic(),
     tool_choice: { type: "auto" }
   });
 
-  console.log(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
+  logger.info(`[ai-stream] Calling ${config.label} (${model}) at ${url}`);
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -1874,13 +2065,14 @@ async function callAnthropicStream(
 
 /** Callback for tool-related SSE events */
 type ToolEventCallback = (event: {
-  type: "tool_call" | "tool_result";
+  type: "tool_call" | "tool_result" | "permission_request";
   toolCallId: string;
   toolName: string;
   arguments?: string;
   result?: string;
   isError?: boolean;
   fileChange?: FileChange;
+  action?: ToolAction;
 }) => void;
 
 /** Streaming version of callAI — invokes onToken for each chunk, supports tool execution loop.
@@ -1892,7 +2084,8 @@ async function callAIStream(
   onToken: TokenCallback,
   fileContext?: string,
   signal?: AbortSignal,
-  onToolEvent?: ToolEventCallback
+  onToolEvent?: ToolEventCallback,
+  sessionId?: string
 ): Promise<StreamResult> {
   const config = resolveProvider(providerLabel);
   if (!config) {
@@ -1912,8 +2105,9 @@ async function callAIStream(
 
   // Build messages with system prompt, workspace file tree, and optional file context
   const basePrompt = getSystemPrompt();
+  const agentPrompt = getAgentSystemPrompt(activeAgentId);
   const fileTree = await getWorkspaceFileTree();
-  let systemContent = basePrompt + fileTree;
+  let systemContent = basePrompt + fileTree + (agentPrompt ? `\n\nAgent focus:\n${agentPrompt}` : "");
   if (fileContext) {
     systemContent += `\n\nThe user currently has this file open:\n\`\`\`\n${fileContext}\n\`\`\``;
   }
@@ -1959,7 +2153,7 @@ async function callAIStream(
       }
 
       // Process tool calls
-      console.log(`[ai-stream] Round ${round + 1}: AI returned ${result.toolCalls.length} tool call(s)`);
+      logger.info(`[ai-stream] Round ${round + 1}: AI returned ${result.toolCalls.length} tool call(s)`);
 
       // Add the assistant message with tool calls to conversation
       const assistantToolCalls = result.toolCalls.map((tc) => ({
@@ -1982,7 +2176,7 @@ async function callAIStream(
           onToolEvent({ type: "tool_call", toolCallId: tc.id, toolName: tc.name, arguments: tc.arguments });
         }
 
-        const toolResult = await executeTool(tc.name, tc.arguments, tc.id);
+        const toolResult = await executeTool(tc.name, tc.arguments, tc.id, sessionId, onToolEvent);
 
         // Track file changes for checkpoint support
         if (toolResult.fileChange) {
@@ -2009,7 +2203,7 @@ async function callAIStream(
         return { content: allContent || "[Streaming aborted]", usage: lastUsage };
       }
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[ai-stream] ${config.label} error (round ${round + 1}):`, message);
+      logger.error("ai.stream_failed", { provider: config.label, round: round + 1, error: message });
       const errMsg = `[Error] ${config.label} API call failed: ${message}`;
       onToken(errMsg);
       return { content: allContent + errMsg, usage: lastUsage };
@@ -2017,7 +2211,7 @@ async function callAIStream(
   }
 
   // If we hit max rounds, return what we have
-  console.warn(`[ai-stream] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
+  logger.warn(`[ai-stream] Hit max tool rounds (${MAX_TOOL_ROUNDS})`);
   return { content: allContent, usage: lastUsage, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined, fileChanges: allFileChanges.length > 0 ? allFileChanges : undefined };
 }
 
@@ -2028,10 +2222,11 @@ async function callAIStream(
 type JsonResponse = ServerResponse;
 
 function sendJson(response: JsonResponse, statusCode: number, payload: unknown) {
+  const origin = (response as JsonResponse & { localsOrigin?: string }).localsOrigin ?? "http://127.0.0.1:3000";
   response.writeHead(statusCode, {
     "content-type": "application/json",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-origin": origin,
+    "access-control-allow-headers": "content-type,authorization",
     "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS"
   });
   response.end(JSON.stringify(payload));
@@ -2054,7 +2249,17 @@ async function collectFiles(directory: string): Promise<FileEntry[]> {
     if (!allowedExtensions.has(extension)) continue;
 
     const relativePath = path.relative(workspaceRoot, absolutePath);
-    const content = await readFile(absolutePath, "utf8");
+    let content = "";
+    try {
+      const fileStat = await stat(absolutePath);
+      if (fileStat.size > MAX_WORKSPACE_FILE_BYTES) {
+        content = `/* File skipped: size ${fileStat.size} bytes exceeds limit ${MAX_WORKSPACE_FILE_BYTES} */`;
+      } else {
+        content = await readFile(absolutePath, "utf8");
+      }
+    } catch {
+      content = "";
+    }
     files.push({
       id: relativePath,
       name: path.basename(relativePath),
@@ -2088,7 +2293,8 @@ function toSummary(session: StoredSession): SessionSummary {
     status: session.status,
     provider: session.provider,
     model: session.model,
-    updatedAt: session.updatedAt
+    updatedAt: session.updatedAt,
+    sharedId: session.sharedId
   };
 }
 
@@ -2139,6 +2345,16 @@ async function buildWorkspaceSnapshot() {
     // Not a git repo or git not available
   }
 
+  const skills = resolvedConfig?.skills?.enabled === false
+    ? []
+    : await listSkills(workspaceRoot, resolvedConfig?.skills?.paths ?? []);
+
+  const agents = resolveAgents(resolvedConfig).map((agent) => ({
+    id: agent.id,
+    label: agent.label,
+    description: agent.description
+  }));
+
   return workspaceSnapshotSchema.parse({
     workspace: {
       id: "alpha-code",
@@ -2150,6 +2366,17 @@ async function buildWorkspaceSnapshot() {
     sessions,
     suggestions: promptSuggestions,
     recentRuns: getRecentRuns(),
+    config: resolvedConfig ?? undefined,
+    configPaths: resolvedConfigPaths ?? undefined,
+    skills,
+    agents,
+    activeAgentId,
+    plugins: pluginRuntime?.plugins.map((p) => ({
+      id: p.definition.id,
+      label: p.definition.label,
+      version: p.definition.version
+    })) ?? [],
+    ci: ciContext,
     providers: await Promise.all(providerConfigs.map(async (config) => ({
       id: config.id,
       label: config.label,
@@ -2291,12 +2518,42 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers": "content-type",
+        "access-control-allow-origin": request.headers.origin && allowedOrigins.has(request.headers.origin) ? request.headers.origin : "http://127.0.0.1:3000",
+        "access-control-allow-headers": "content-type,authorization",
         "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS"
       });
       response.end();
       return;
+    }
+
+    const origin = request.headers.origin;
+    if (origin && !allowedOrigins.has(origin)) {
+      sendJson(response, 403, { error: "Origin not allowed" });
+      return;
+    }
+
+    (response as JsonResponse & { localsOrigin?: string }).localsOrigin = origin && allowedOrigins.has(origin)
+      ? origin
+      : "http://127.0.0.1:3000";
+
+    const start = Date.now();
+    response.on("finish", () => {
+      logger.info("http.request", {
+        method: request.method,
+        url: request.url,
+        status: response.statusCode,
+        durationMs: Date.now() - start
+      });
+    });
+
+    if (webPassword) {
+      const auth = request.headers.authorization ?? "";
+      const urlToken = request.url?.includes("?") ? new URL(request.url, `http://localhost:${port}`).searchParams.get("token") : null;
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : urlToken;
+      if (!token || token !== webPassword) {
+        sendJson(response, 401, { error: "Unauthorized" });
+        return;
+      }
     }
 
     if (request.url === "/health") {
@@ -2325,6 +2582,17 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url?.startsWith("/share/")) {
+      const shareId = request.url.replace("/share/", "");
+      const share = getShare(shareId);
+      if (!share) {
+        sendJson(response, 404, { error: "Share not found" });
+        return;
+      }
+      sendJson(response, 200, share);
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith("/api/fs")) {
       const url = new URL(request.url, `http://localhost:${port}`);
       const dir = url.searchParams.get("path") ?? ".";
@@ -2332,9 +2600,33 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url?.startsWith("/api/skills")) {
+      const url = new URL(request.url, `http://localhost:${port}`);
+      const skillPath = url.searchParams.get("path");
+      if (skillPath) {
+        try {
+          const content = await readSkill(workspaceRoot, skillPath);
+          sendJson(response, 200, { path: skillPath, content });
+        } catch (err) {
+          sendJson(response, 404, { error: "Skill not found" });
+        }
+        return;
+      }
+      const skills = resolvedConfig?.skills?.enabled === false
+        ? []
+        : await listSkills(workspaceRoot, resolvedConfig?.skills?.paths ?? []);
+      sendJson(response, 200, { skills });
+      return;
+    }
+
     if (request.method === "GET" && request.url === "/api/provider-usage") {
       const usage = await getAllProviderUsage();
       sendJson(response, 200, { providers: usage });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/ci") {
+      sendJson(response, 200, { ci: ciContext });
       return;
     }
 
@@ -2350,6 +2642,104 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && request.url === "/api/workspace/recent") {
       sendJson(response, 200, { projects: recentProjects });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/config/reload") {
+      await refreshConfig();
+      sendJson(response, 200, { ok: true, config: resolvedConfig, configPaths: resolvedConfigPaths });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/plugins/reload") {
+      pluginRuntime = await loadPlugins(workspaceRoot, resolvedConfig);
+      sendJson(response, 200, { ok: true, plugins: pluginRuntime.plugins.map((p) => p.definition) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/agents/switch") {
+      const body = await readJsonBody(request) as { agentId?: string };
+      const agentId = body.agentId?.trim();
+      if (!agentId) {
+        sendJson(response, 400, { error: "Missing agentId" });
+        return;
+      }
+      const agents = resolveAgents(resolvedConfig);
+      if (!agents.some((agent) => agent.id === agentId)) {
+        sendJson(response, 404, { error: "Unknown agentId" });
+        return;
+      }
+      activeAgentId = agentId;
+      sendJson(response, 200, { ok: true, activeAgentId });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/permissions/approve") {
+      const body = await readJsonBody(request) as { sessionId?: string; toolCallId?: string; allow?: boolean; remember?: boolean; action?: ToolAction };
+      if (!body.sessionId || !body.toolCallId) {
+        sendJson(response, 400, { error: "Missing sessionId or toolCallId" });
+        return;
+      }
+      const pending = pendingToolApprovals.get(body.toolCallId);
+      if (!pending || pending.sessionId !== body.sessionId) {
+        sendJson(response, 404, { error: "No pending permission for this tool call" });
+        return;
+      }
+      const allow = body.allow === true;
+      if (allow && body.remember) {
+        const approvals = sessionToolApprovals.get(body.sessionId) ?? new Set<ToolAction>();
+        approvals.add(pending.action);
+        sessionToolApprovals.set(body.sessionId, approvals);
+      }
+      pending.resolve(allow);
+      pendingToolApprovals.delete(body.toolCallId);
+      sendJson(response, 200, { ok: true, allowed: allow });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/share") {
+      const body = await readJsonBody(request) as { sessionId?: string };
+      const sessionId = body.sessionId?.trim();
+      if (!sessionId) {
+        sendJson(response, 400, { error: "Missing sessionId" });
+        return;
+      }
+      const session = sessionStore.get(sessionId);
+      if (!session) {
+        sendJson(response, 404, { error: "Session not found" });
+        return;
+      }
+
+      const shareId = randomUUID();
+      const content = session.messages.map((m) => `[${m.role}] ${m.content}`).join("\n\n");
+      await createShare({
+        id: shareId,
+        createdAt: new Date().toISOString(),
+        sessionId,
+        title: session.title,
+        content
+      });
+      session.sharedId = shareId;
+      sessionStore.set(session.id, { ...session });
+      persistSessions();
+      sendJson(response, 201, { id: shareId, url: `/share/${shareId}` });
+      return;
+    }
+
+    if (request.method === "DELETE" && request.url?.startsWith("/api/share/")) {
+      const shareId = request.url.replace("/api/share/", "");
+      const deleted = await deleteShare(shareId);
+      if (deleted) {
+        for (const session of sessionStore.values()) {
+          if (session.sharedId === shareId) {
+            session.sharedId = undefined;
+            sessionStore.set(session.id, { ...session });
+            break;
+          }
+        }
+        persistSessions();
+      }
+      sendJson(response, 200, { ok: true, deleted });
       return;
     }
 
@@ -2373,7 +2763,8 @@ const server = createServer(async (request, response) => {
       }
       workspaceRoot = resolved;
       touchProject(resolved);
-      console.log(`[workspace] Switched to ${resolved}`);
+      await refreshConfig();
+      logger.info(`[workspace] Switched to ${resolved}`);
       sendJson(response, 200, {
         root: workspaceRoot,
         name: path.basename(workspaceRoot),
@@ -2556,7 +2947,7 @@ const server = createServer(async (request, response) => {
             }
           });
         }
-      }).then((result) => {
+      }, id).then((result) => {
         activeAbortControllers.delete(id);
         // Store intermediate tool messages into the session
         for (const tm of pendingToolMessages) {
@@ -2570,7 +2961,7 @@ const server = createServer(async (request, response) => {
         sessionStore.set(id, { ...session });
         persistSessions();
         emitter.emit("done", { messageId, usage: result.usage });
-        console.log(`[ai-stream] Session ${id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
+        logger.info(`[ai-stream] Session ${id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(id);
         // Still store any tool messages that happened before the error
@@ -2669,7 +3060,7 @@ const server = createServer(async (request, response) => {
             }
           });
         }
-      }).then((result) => {
+      }, payload.sessionId).then((result) => {
         activeAbortControllers.delete(session.id);
         // Store intermediate tool messages into the session
         for (const tm of pendingToolMessages) {
@@ -2683,7 +3074,7 @@ const server = createServer(async (request, response) => {
         sessionStore.set(session.id, { ...session });
         persistSessions();
         emitter.emit("done", { messageId, usage: result.usage });
-        console.log(`[ai-stream] Session ${session.id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
+        logger.info(`[ai-stream] Session ${session.id} got reply (${result.content.length} chars)${result.usage ? ` [${result.usage.inputTokens}+${result.usage.outputTokens} tokens]` : ""}`);
       }).catch((error) => {
         activeAbortControllers.delete(session.id);
         // Still store any tool messages that happened before the error
@@ -2785,15 +3176,15 @@ const server = createServer(async (request, response) => {
           if (fc.isNewFile) {
             // File was newly created — delete it
             await unlink(absPath);
-            console.log(`[restore] Deleted new file: ${fc.filePath}`);
+            logger.info(`[restore] Deleted new file: ${fc.filePath}`);
           } else {
             // File existed before — restore previous content
             await writeFile(absPath, fc.previousContent, "utf8");
-            console.log(`[restore] Restored: ${fc.filePath}`);
+            logger.info(`[restore] Restored: ${fc.filePath}`);
           }
           restoredFiles.push(fc.filePath);
         } catch (err) {
-          console.error(`[restore] Failed to restore ${fc.filePath}:`, (err as Error).message);
+          logger.error("restore.failed", { file: fc.filePath, error: (err as Error).message });
         }
       }
 
@@ -2820,8 +3211,8 @@ const server = createServer(async (request, response) => {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Allow-Origin": origin && allowedOrigins.has(origin) ? origin : "http://127.0.0.1:3000",
+        "Access-Control-Allow-Headers": "content-type,authorization",
         "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS"
       });
 
@@ -2845,12 +3236,16 @@ const server = createServer(async (request, response) => {
       const onToolResult = (payload: { messageId: string; toolCallId: string; toolName: string; result?: string; isError?: boolean; fileChange?: FileChange }) => {
         response.write(`data: ${JSON.stringify({ type: "tool_result", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, result: payload.result, isError: payload.isError, fileChange: payload.fileChange })}\n\n`);
       };
+      const onPermissionRequest = (payload: { messageId: string; toolCallId: string; toolName: string; action?: ToolAction }) => {
+        response.write(`data: ${JSON.stringify({ type: "permission_request", messageId: payload.messageId, toolCallId: payload.toolCallId, toolName: payload.toolName, action: payload.action })}\n\n`);
+      };
 
       emitter.on("token", onToken);
       emitter.on("done", onDone);
       emitter.on("error", onError);
       emitter.on("tool_call", onToolCall);
       emitter.on("tool_result", onToolResult);
+      emitter.on("permission_request", onPermissionRequest);
 
       // Cleanup when client disconnects
       request.on("close", () => {
@@ -2859,6 +3254,7 @@ const server = createServer(async (request, response) => {
         emitter.off("error", onError);
         emitter.off("tool_call", onToolCall);
         emitter.off("tool_result", onToolResult);
+        emitter.off("permission_request", onPermissionRequest);
         // Clean up emitter if no listeners remain
         if (emitter.listenerCount("token") === 0) {
           sessionEmitters.delete(sessionId);
@@ -2878,7 +3274,7 @@ const server = createServer(async (request, response) => {
         // Also emit a done event so the SSE client knows streaming ended
         const emitter = getSessionEmitter(sessionId);
         emitter.emit("done", { messageId: null, aborted: true });
-        console.log(`[ai-stream] Aborted streaming for session ${sessionId}`);
+        logger.info(`[ai-stream] Aborted streaming for session ${sessionId}`);
       }
       const session = sessionStore.get(sessionId);
       if (session) {
@@ -2934,8 +3330,8 @@ const server = createServer(async (request, response) => {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Allow-Origin": origin && allowedOrigins.has(origin) ? origin : "http://127.0.0.1:3000",
+        "Access-Control-Allow-Headers": "content-type,authorization",
         "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS"
       });
 
@@ -3049,7 +3445,7 @@ const server = createServer(async (request, response) => {
       const payload = saveKeyInputSchema.parse(await readJsonBody(request));
       storedKeys.set(payload.provider, payload.key);
       invalidateModelCache(payload.provider);
-      console.log(`[auth] Stored API key for provider: ${payload.provider}`);
+      logger.info(`[auth] Stored API key for provider: ${payload.provider}`);
       void persistAuth();
       sendJson(response, 200, { ok: true, provider: payload.provider });
       return;
@@ -3060,7 +3456,7 @@ const server = createServer(async (request, response) => {
       const providerId = request.url.replace("/api/auth/keys/", "");
       storedKeys.delete(providerId);
       invalidateModelCache(providerId);
-      console.log(`[auth] Removed stored key for provider: ${providerId}`);
+      logger.info(`[auth] Removed stored key for provider: ${providerId}`);
       void persistAuth();
       sendJson(response, 200, { ok: true, provider: providerId });
       return;
@@ -3141,14 +3537,14 @@ function startTerminalServer(): void {
         } as Record<string, string>
       });
     } catch (err) {
-      console.error("[terminal] Failed to spawn PTY:", err instanceof Error ? err.message : err);
+      logger.error("terminal.spawn_failed", { error: err instanceof Error ? err.message : String(err) });
       ws.send(JSON.stringify({ type: "error", data: `Failed to spawn terminal: ${err instanceof Error ? err.message : String(err)}` }));
       ws.close();
       return;
     }
 
     activePtySessions.set(ws, ptyProcess);
-    console.log(`[terminal] PTY spawned (pid: ${ptyProcess.pid}, shell: ${shell})`);
+    logger.info(`[terminal] PTY spawned (pid: ${ptyProcess.pid}, shell: ${shell})`);
 
     // PTY → WebSocket (shell output)
     ptyProcess.onData((data: string) => {
@@ -3158,7 +3554,7 @@ function startTerminalServer(): void {
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
-      console.log(`[terminal] PTY exited (code: ${exitCode}, signal: ${signal})`);
+      logger.info(`[terminal] PTY exited (code: ${exitCode}, signal: ${signal})`);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
         ws.close();
@@ -3189,30 +3585,48 @@ function startTerminalServer(): void {
     });
 
     ws.on("close", () => {
-      console.log("[terminal] WebSocket closed, killing PTY");
+      logger.info("[terminal] WebSocket closed, killing PTY");
       ptyProcess.kill();
       activePtySessions.delete(ws);
     });
 
     ws.on("error", (err: Error) => {
-      console.error("[terminal] WebSocket error:", err.message);
+      logger.error("terminal.ws_error", { error: err.message });
       ptyProcess.kill();
       activePtySessions.delete(ws);
     });
   });
 
   wss.on("error", (err: Error) => {
-    console.error("[terminal] WebSocket server error:", err.message);
+    logger.error("terminal.ws_server_error", { error: err.message });
   });
 
-  console.log(`[terminal] WebSocket PTY server listening on ws://127.0.0.1:${WS_PORT}`);
+  logger.info(`[terminal] WebSocket PTY server listening on ws://127.0.0.1:${WS_PORT}`);
 }
 
 /* ================================================================
    Startup
    ================================================================ */
 
+async function refreshConfig(): Promise<void> {
+  try {
+    const { config, paths } = await loadConfig(workspaceRoot);
+    resolvedConfig = config;
+    resolvedConfigPaths = paths;
+    const nextDefault = getDefaultAgent(resolvedConfig);
+    activeAgentId = nextDefault;
+    pluginRuntime = await loadPlugins(workspaceRoot, resolvedConfig);
+  } catch (err) {
+    logger.error("config.load_failed", { error: err instanceof Error ? err.message : String(err) });
+    resolvedConfig = null;
+    resolvedConfigPaths = null;
+    activeAgentId = "default";
+    pluginRuntime = null;
+  }
+}
+
 async function startServer(): Promise<void> {
+  await refreshConfig();
   // Load persisted auth tokens from disk (GitHub OAuth, manual API keys)
   await loadPersistedAuth();
 
@@ -3221,6 +3635,7 @@ async function startServer(): Promise<void> {
 
   // Load recent projects list and mark the current workspace as active
   await loadPersistedProjects();
+  await loadShares();
   touchProject(workspaceRoot);
 
   // Start WebSocket PTY terminal server
@@ -3231,12 +3646,12 @@ async function startServer(): Promise<void> {
   const disconnectedProviders = providerConfigs.filter((c) => !getKeyForProvider(c.id));
 
   server.listen(port, "127.0.0.1", () => {
-    console.log(`${APP_NAME} server listening on http://127.0.0.1:${port}`);
+    logger.info(`${APP_NAME} server listening on http://127.0.0.1:${port}`);
     if (connectedProviders.length > 0) {
-      console.log(`[ai] Connected providers: ${connectedProviders.map((c) => c.label).join(", ")}`);
+      logger.info(`[ai] Connected providers: ${connectedProviders.map((c) => c.label).join(", ")}`);
     }
     if (disconnectedProviders.length > 0) {
-      console.log(`[ai] Missing API keys: ${disconnectedProviders.map((c) => `${c.label} (${c.envKey})`).join(", ")}`);
+      logger.info(`[ai] Missing API keys: ${disconnectedProviders.map((c) => `${c.label} (${c.envKey})`).join(", ")}`);
     }
   });
 }

@@ -1,0 +1,33 @@
+{
+  // Alpha Code project config (JSONC)
+  "version": 1,
+  "permissions": {
+    "tools": {
+      "run_command": "ask",
+      "write_file": "ask",
+      "read_file": "allow",
+      "list_files": "allow"
+    },
+    "plugins": "ask"
+  },
+  "agents": {
+    "enabled": true,
+    "defaultAgent": "default"
+  },
+  "skills": {
+    "enabled": true,
+    "paths": [
+      ".alpha-code/skills"
+    ]
+  },
+  "plugins": {
+    "enabled": true,
+    "directories": [
+      ".alpha-code/plugins"
+    ]
+  },
+  "sharing": {
+    "mode": "manual",
+    "localOnly": true
+  }
+}
