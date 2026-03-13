@@ -329,6 +329,10 @@ let githubDeviceFlow: GitHubDeviceFlowState | null = null;
 const COPILOT_CLIENT_ID = process.env.COPILOT_CLIENT_ID ?? "Ov23li8tweQw6odWQebz";
 
 function getKeyForProvider(providerId: string): string | undefined {
+  if (providerId === "free") {
+    // Server-managed only; end users never provide keys for this provider.
+    return process.env.ALPHA_CODE_FREE_API_KEY;
+  }
   if (providerId === "copilot") {
     // Copilot: OAuth token is the primary auth method
     const oauthToken = storedKeys.get("copilot-oauth");
@@ -357,6 +361,9 @@ async function getKeyForProviderAsync(providerId: string): Promise<string | unde
 }
 
 function getAuthMethod(config: ProviderConfig): AuthMethod {
+  if (config.id === "free") {
+    return process.env.ALPHA_CODE_FREE_API_KEY ? "env" : "none";
+  }
   if (config.id === "copilot") {
     if (storedKeys.has("copilot-oauth")) return "oauth";
     if (process.env.GITHUB_TOKEN) return "env";
@@ -540,6 +547,25 @@ interface ProviderConfig {
 
 const providerConfigs: ProviderConfig[] = [
   {
+    id: "free",
+    label: "Free",
+    // Server/operator-provided key; end users never enter keys for this provider.
+    // In production, set this to a limited key / gateway that enforces your own rate limits.
+    envKey: "ALPHA_CODE_FREE_API_KEY",
+    // Default: OpenRouter-compatible gateway; can be overridden by pointing this env key at your own proxy.
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModel: "google/gemini-2.0-flash-lite",
+    // Curated "free-tier" defaults (keep small + fast).
+    // Note: exact free availability depends on your gateway/provider configuration.
+    fallbackModels: [
+      "google/gemini-2.0-flash-lite",
+      "meta-llama/llama-3.1-8b-instruct",
+      "mistralai/mistral-7b-instruct",
+      "qwen/qwen2.5-7b-instruct"
+    ],
+    format: "openai"
+  },
+  {
     id: "copilot",
     label: "Copilot",
     envKey: "GITHUB_TOKEN",
@@ -591,6 +617,21 @@ const providerConfigs: ProviderConfig[] = [
       "deepseek/deepseek-reasoner", "meta-llama/llama-4-maverick"
     ],
     format: "openai"
+  },
+  {
+    id: "ollama",
+    label: "Ollama (Local)",
+    envKey: "OLLAMA_API_KEY",
+    baseUrl: "http://localhost:11434/v1",
+    defaultModel: "codellama:latest",
+    fallbackModels: [
+      "codellama:latest", "codellama:7b", "codellama:13b",
+      "llama3:8b", "llama3:70b", 
+      "qwen2.5-coder:7b", "qwen2.5-coder:14b",
+      "phi3:mini", "phi3:medium",
+      "deepseek-coder:6.7b", "mistral:7b"
+    ],
+    format: "openai"
   }
 ];
 
@@ -600,6 +641,12 @@ function getProviderStatus(config: ProviderConfig): "connected" | "disconnected"
     const hasEnv = !!process.env[config.envKey];
     if (hasOAuth || hasEnv) return "connected";
     return "disconnected";
+  }
+
+  if (config.id === "ollama") {
+    // Ollama is considered "connected" if it's running locally (no API key needed)
+    // We'll check if the user has configured any custom Ollama URL or if local is available
+    return "experimental"; // Ollama is always available but server-side only
   }
 
   const key = getKeyForProvider(config.id);
@@ -865,6 +912,32 @@ function deduplicateModels(models: string[]): string[] {
 }
 
 async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]> {
+  // "Free" provider uses a curated static list intentionally.
+  if (config.id === "free") {
+    return config.fallbackModels;
+  }
+  
+  // Ollama doesn't require an API key
+  if (config.id === "ollama") {
+    try {
+      const res = await fetch(`${config.baseUrl}/models`);
+      if (!res.ok) throw new Error(`Ollama /models returned ${res.status}`);
+      const data = (await res.json()) as { models?: Array<{ name: string }> };
+      const models = (data.models ?? [])
+        .map((m) => m.name)
+        .sort();
+      if (models.length > 0) {
+        modelCache.set(config.id, { models, fetchedAt: Date.now() });
+        logger.info(`[models] Fetched ${models.length} models for ${config.label}`);
+        return models;
+      }
+    } catch (err) {
+      logger.warn("models.ollama_fetch_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    // Fall back to static list if Ollama is not available
+    return config.fallbackModels;
+  }
+
   const apiKey = await getKeyForProviderAsync(config.id);
   if (!apiKey) return config.fallbackModels;
 
@@ -1197,8 +1270,7 @@ async function executeTool(
           timeout: 30000,
           maxBuffer: 1024 * 1024,
           env: {
-            ...process.env,
-            PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`
+            ...process.env
           }
         });
         return { result: output || "(no output)", isError: false };
@@ -1372,8 +1444,8 @@ async function callOpenAICompatible(
     Authorization: `Bearer ${apiKey}`
   };
 
-  // OpenRouter wants extra headers
-  if (config.id === "openrouter") {
+  // OpenRouter-compatible gateways want extra headers
+  if (config.baseUrl.includes("openrouter.ai")) {
     headers["HTTP-Referer"] = "https://alpha-code.local";
     headers["X-Title"] = "Alpha Code";
   }
@@ -1621,7 +1693,7 @@ async function callOpenAICompatibleStream(
     Authorization: `Bearer ${apiKey}`
   };
 
-  if (config.id === "openrouter") {
+  if (config.baseUrl.includes("openrouter.ai")) {
     headers["HTTP-Referer"] = "https://alpha-code.local";
     headers["X-Title"] = "Alpha Code";
   }
@@ -2416,8 +2488,7 @@ async function runCommand(command: string, sessionId?: string) {
   const child = spawn(shell, ["-lc", command], {
     cwd: workspaceRoot,
     env: {
-      ...process.env,
-      PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`
+      ...process.env
     }
   });
 
@@ -3443,6 +3514,10 @@ const server = createServer(async (request, response) => {
     // POST /api/auth/keys — save an API key for a provider
     if (request.method === "POST" && request.url === "/api/auth/keys") {
       const payload = saveKeyInputSchema.parse(await readJsonBody(request));
+      if (payload.provider === "free") {
+        sendJson(response, 400, { error: "The Free provider is server-managed and does not accept user API keys." });
+        return;
+      }
       storedKeys.set(payload.provider, payload.key);
       invalidateModelCache(payload.provider);
       logger.info(`[auth] Stored API key for provider: ${payload.provider}`);
@@ -3454,6 +3529,10 @@ const server = createServer(async (request, response) => {
     // DELETE /api/auth/keys/:provider — remove a stored key
     if (request.method === "DELETE" && request.url?.startsWith("/api/auth/keys/")) {
       const providerId = request.url.replace("/api/auth/keys/", "");
+      if (providerId === "free") {
+        sendJson(response, 400, { error: "The Free provider is server-managed and does not store user keys." });
+        return;
+      }
       storedKeys.delete(providerId);
       invalidateModelCache(providerId);
       logger.info(`[auth] Removed stored key for provider: ${providerId}`);
@@ -3532,7 +3611,6 @@ function startTerminalServer(): void {
         cwd: workspaceRoot,
         env: {
           ...process.env,
-          PATH: `/Users/aarushtanwar/.nvm/versions/node/v20.20.0/bin:${process.env.PATH ?? ""}`,
           TERM: "xterm-256color"
         } as Record<string, string>
       });

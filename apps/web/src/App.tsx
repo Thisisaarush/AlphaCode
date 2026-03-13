@@ -182,7 +182,7 @@ function modelMatchesMode(modelId: string, mode: string): boolean {
   }
 }
 
-function highlightLabel(label: string, query: string): JSX.Element | string {
+function highlightLabel(label: string, query: string): React.ReactNode {
   if (!query) return label;
   const idx = label.toLowerCase().indexOf(query.toLowerCase());
   if (idx === -1) return label;

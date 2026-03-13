@@ -33,6 +33,7 @@ export const fileChangeSchema = z.object({
 });
 
 export const providerIdSchema = z.enum([
+  "free",
   "copilot",
   "openrouter",
   "anthropic",
