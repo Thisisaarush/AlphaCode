@@ -417,10 +417,12 @@ button.titlebar-chip {
 
 .sidebar-layout.collapsed {
   grid-template-columns: var(--rail-w) 0px;
+  overflow: hidden;
 }
 
 .sidebar-layout.collapsed .sidebar-panel {
   display: none;
+  overflow: hidden;
 }
 
 .sidebar-rail {
@@ -1515,6 +1517,136 @@ button.titlebar-chip {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* Custom dropdown styles */
+.dock-dropdown {
+  position: relative;
+}
+
+.dock-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-base);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.dock-dropdown-trigger:hover {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+.dock-dropdown-trigger.mode-trigger {
+  background: var(--surface-base);
+  color: var(--primary, #fab283);
+  padding: 4px 10px;
+}
+
+.dock-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  background: var(--background-stronger);
+  border: 1px solid var(--border-weak-base);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dock-dropdown-menu.model-menu {
+  min-width: 240px;
+  max-height: 320px;
+}
+
+.dock-dropdown-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-weaker-base);
+  color: var(--text-weak);
+}
+
+.dock-dropdown-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.dock-dropdown-search input::placeholder {
+  color: var(--text-weak);
+}
+
+.dock-dropdown-items {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.dock-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-base);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.dock-dropdown-item:hover {
+  background: var(--surface-hover);
+}
+
+.dock-dropdown-item.active {
+  background: var(--surface-raised-stronger-non-alpha);
+  color: var(--primary, #fab283);
+}
+
+.dock-dropdown-badge {
+  font-size: 10px;
+  color: var(--text-weak);
+  background: var(--surface-base);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.dock-dropdown-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-weak);
+  font-size: 12px;
+}
+
+.dock-tray-context-label {
+  font-size: 11px;
+  color: var(--text-weak);
+}
+
+/* Send button icon-only */
+.dock-send-btn {
+  padding: 8px 10px !important;
+}
+
+.dock-send-btn span {
+  display: none;
 }
 
 .dock-tray-sep {

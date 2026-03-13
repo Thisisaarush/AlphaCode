@@ -366,7 +366,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "");
   const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "");
-  const [mode, setMode] = useState(() => localStorage.getItem("ac:mode") || "general");
+  const [mode, setMode] = useState<"plan" | "build">(() => (localStorage.getItem("ac:mode") as "plan" | "build") || "build");
   const [prompt, setPrompt] = useState("");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
   const [dockTab, setDockTab] = useState<DockTab>("terminal");
@@ -389,8 +389,13 @@ export default function App() {
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showLeftPanel, setShowLeftPanel] = useState(true);
+  const [showProviderDropdown, setShowProviderDropdown] = useState(false);
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
   const terminalOutputRef = useRef<HTMLPreElement>(null);
+  const providerDropdownRef = useRef<HTMLDivElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   // xterm.js terminal state
   const xtermContainerRef = useRef<HTMLDivElement>(null);
@@ -2296,7 +2301,7 @@ export default function App() {
                                 setAutocompleteQuery("");
                               }
                             }}
-                            placeholder="Ask Alpha Code to inspect, plan, edit, or review"
+                            placeholder="Describe what you want to build..."
                             rows={3}
                             onKeyDown={(event) => {
                               if (autocompleteType) {
@@ -2356,23 +2361,14 @@ export default function App() {
                           />
                         </div>
                         <div className="dock-footer">
-                          <div className="dock-hints">
-                            <span>
-                              <Command size={11} /> Commands
-                            </span>
-                            <span>
-                              <Braces size={11} /> Context
-                            </span>
-                          </div>
                           {isStreaming ? (
-                            <button className="titlebar-action danger" type="button" onClick={() => void handleStopStreaming()}>
+                            <button className="titlebar-action danger dock-send-btn" type="button" onClick={() => void handleStopStreaming()}>
                               <Square size={13} />
                               <span>Stop</span>
                             </button>
                           ) : (
-                            <button className="titlebar-action primary" type="button" onClick={() => void handleSubmitPrompt()}>
-                              {submitting ? <LoaderCircle className="spin" size={13} /> : <Play size={13} />}
-                              <span>{submitting ? "Sending" : "Send"}</span>
+                            <button className="titlebar-action primary dock-send-btn" type="button" onClick={() => void handleSubmitPrompt()}>
+                              {submitting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
                             </button>
                           )}
                         </div>
@@ -2380,81 +2376,128 @@ export default function App() {
                     </div>
                     <div className="dock-tray">
                       <div className="dock-tray-selectors">
-                        <label className="dock-tray-select">
-                          <span>{provider}</span>
-                          <select
-                            value={provider}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setProvider(next);
-                              localStorage.setItem("ac:provider", next);
-                              // Auto-select first enabled model for this provider
-                              const p = snapshot?.providers.find((p) => p.label === next);
-                              const enabled = (p?.models ?? []).filter((m) => !disabledModels[m]);
-                              const filtered = enabled.filter((m) => modelMatchesMode(m, mode));
-                              const firstEnabled = (filtered[0] ?? enabled[0]) || "";
-                              if (firstEnabled) {
-                                setModel(firstEnabled);
-                                localStorage.setItem("ac:model", firstEnabled);
-                              }
-                            }}
+                        {/* Provider selector */}
+                        <div className="dock-dropdown" ref={providerDropdownRef}>
+                          <button
+                            className="dock-dropdown-trigger"
+                            type="button"
+                            onClick={() => { setShowProviderDropdown(!showProviderDropdown); setShowModelDropdown(false); }}
                           >
-                            {(snapshot?.providers ?? []).map((p) => (
-                              <option key={p.id} value={p.label}>{p.label}{p.status === "disconnected" ? " (no key)" : ""}</option>
-                            ))}
-                          </select>
-                        </label>
+                            <span>{provider || "Select provider"}</span>
+                            <ChevronDown size={12} />
+                          </button>
+                          {showProviderDropdown && (
+                            <div className="dock-dropdown-menu">
+                              {(snapshot?.providers ?? []).filter((p) => p.status === "connected").map((p) => (
+                                <button
+                                  key={p.id}
+                                  className={`dock-dropdown-item${provider === p.label ? " active" : ""}`}
+                                  type="button"
+                                  onClick={() => {
+                                    setProvider(p.label);
+                                    localStorage.setItem("ac:provider", p.label);
+                                    const enabled = (p.models ?? []).filter((m) => !disabledModels[m]);
+                                    const firstEnabled = enabled[0] || "";
+                                    if (firstEnabled) {
+                                      setModel(firstEnabled);
+                                      localStorage.setItem("ac:model", firstEnabled);
+                                    }
+                                    setShowProviderDropdown(false);
+                                  }}
+                                >
+                                  {p.label}
+                                  {p.status === "disconnected" && <span className="dock-dropdown-badge">No key</span>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
                         <span className="dock-tray-sep">/</span>
-                        <label className="dock-tray-select">
-                          <span>{mode}</span>
-                          <select
-                            value={mode}
-                            onChange={(e) => {
-                              const next = e.target.value;
+
+                        {/* Mode selector - Plan/Build */}
+                        <div className="dock-dropdown">
+                          <button
+                            className="dock-dropdown-trigger mode-trigger"
+                            type="button"
+                            onClick={() => {
+                              const next = mode === "build" ? "plan" : "build";
                               setMode(next);
                               localStorage.setItem("ac:mode", next);
+                              // Auto-select first model for new mode
                               const p = snapshot?.providers.find((p) => p.label === provider);
-                              const enabled = (p?.models ?? []).filter((m) => !disabledModels[m]);
-                              const filtered = enabled.filter((m) => modelMatchesMode(m, next));
-                              const first = (filtered[0] ?? enabled[0]) || "";
-                              if (first) {
-                                setModel(first);
-                                localStorage.setItem("ac:model", first);
+                              if (p) {
+                                const enabled = (p.models ?? []).filter((m) => !disabledModels[m]);
+                                const first = enabled[0] || "";
+                                if (first) {
+                                  setModel(first);
+                                  localStorage.setItem("ac:model", first);
+                                }
                               }
                             }}
                           >
-                            {["general", "code", "reasoning", "fast"].map((m) => (
-                              <option key={m} value={m}>{m}</option>
-                            ))}
-                          </select>
-                        </label>
+                            <span>{mode === "build" ? "Build" : "Plan"}</span>
+                          </button>
+                        </div>
+
                         <span className="dock-tray-sep">/</span>
-                        <label className="dock-tray-select">
-                          <span>{prettifyModelId(model)}</span>
-                          <select
-                            value={model}
-                            onChange={(e) => {
-                              setModel(e.target.value);
-                              localStorage.setItem("ac:model", e.target.value);
-                            }}
+
+                        {/* Model selector with search */}
+                        <div className="dock-dropdown" ref={modelDropdownRef}>
+                          <button
+                            className="dock-dropdown-trigger"
+                            type="button"
+                            onClick={() => { setShowModelDropdown(!showModelDropdown); setShowProviderDropdown(false); setModelSearchQuery(""); }}
                           >
-                            {(() => {
-                              const all = (snapshot?.providers.find((p) => p.label === provider)?.models ?? [])
-                                .filter((m) => !disabledModels[m]);
-                              const filtered = all.filter((m) => modelMatchesMode(m, mode));
-                              const list = filtered.length > 0 ? filtered : all;
-                              return list.map((m) => (
-                                <option key={m} value={m}>{prettifyModelId(m)}</option>
-                              ));
-                            })()}
-                          </select>
-                        </label>
+                            <span>{prettifyModelId(model) || "Select model"}</span>
+                            <ChevronDown size={12} />
+                          </button>
+                          {showModelDropdown && (
+                            <div className="dock-dropdown-menu model-menu">
+                              <div className="dock-dropdown-search">
+                                <Search size={12} />
+                                <input
+                                  type="text"
+                                  placeholder="Search models..."
+                                  value={modelSearchQuery}
+                                  onChange={(e) => setModelSearchQuery(e.target.value)}
+                                  autoFocus
+                                />
+                              </div>
+                              <div className="dock-dropdown-items">
+                                {(() => {
+                                  const p = snapshot?.providers.find((p) => p.label === provider);
+                                  const all = (p?.models ?? []).filter((m) => !disabledModels[m]);
+                                  const filtered = modelSearchQuery
+                                    ? all.filter((m) => m.toLowerCase().includes(modelSearchQuery.toLowerCase()))
+                                    : all;
+                                  return filtered.length > 0 ? filtered.map((m) => (
+                                    <button
+                                      key={m}
+                                      className={`dock-dropdown-item${model === m ? " active" : ""}`}
+                                      type="button"
+                                      onClick={() => {
+                                        setModel(m);
+                                        localStorage.setItem("ac:model", m);
+                                        setShowModelDropdown(false);
+                                      }}
+                                    >
+                                      {prettifyModelId(m)}
+                                    </button>
+                                  )) : (
+                                    <div className="dock-dropdown-empty">No models found</div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                       {(() => {
                         // Find provider ID from label
                         const currentProviderId = snapshot?.providers.find((p) => p.label === provider)?.id ?? "";
                         const usage = providerUsage.find((u) => u.providerId === currentProviderId);
-                        const hasUsage = usage && usage.usageLabel !== "No usage yet" && usage.usageLabel !== "No API key";
+                        const hasUsage = usage && usage.usageLabel !== "No usage yet" && usage.usageLabel !== "No API key" && usage.usageLabel !== "Error fetching";
                         const barPercent = usage?.usagePercent ?? 0;
                         const barColor = barPercent > 80 ? "var(--color-error)" : barPercent > 50 ? "#e8a832" : "var(--color-success)";
 
@@ -2467,13 +2510,15 @@ export default function App() {
                                     <div className="context-bar">
                                       <div className="context-bar-fill" style={{ width: `${barPercent}%`, backgroundColor: barColor }} />
                                     </div>
-                                    <span className="context-bar-label">{usage.usageLabel} ({barPercent.toFixed(1)}%)</span>
+                                    <span className="context-bar-label">{usage.usageLabel}</span>
                                   </>
                                 ) : (
                                   <span className="context-bar-label">{usage.usageLabel}</span>
                                 )}
                               </div>
-                            ) : null}
+                            ) : (
+                              <span className="dock-tray-context-label">{usage?.usageLabel || "Not connected"}</span>
+                            )}
                             {sessionDetail ? (
                               <span className="dock-tray-requests" title={`${sessionUsage.requestCount} AI request${sessionUsage.requestCount !== 1 ? "s" : ""} in this session\n${sessionUsage.totalTokens > 0 ? `Tokens: ${formatTokens(sessionUsage.totalInputTokens)} in / ${formatTokens(sessionUsage.totalOutputTokens)} out (${formatTokens(sessionUsage.totalTokens)} total)` : ""}`}>
                                 <Zap size={11} />
