@@ -931,8 +931,10 @@ async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]>
         logger.info(`[models] Fetched ${models.length} models for ${config.label}`);
         return models;
       }
-    } catch (err) {
-      logger.warn("models.ollama_fetch_failed", { error: err instanceof Error ? err.message : String(err) });
+    } catch {
+      // Ollama not available — this is expected if not installed
+      // Cache the failure so we don't keep retrying
+      modelCache.set(config.id, { models: [], fetchedAt: Date.now() });
     }
     // Fall back to static list if Ollama is not available
     return config.fallbackModels;

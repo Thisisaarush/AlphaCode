@@ -2233,9 +2233,10 @@ button.titlebar-chip {
 /* ===== Responsive ===== */
 @media (max-width: 1180px) {
   .titlebar {
-    grid-template-columns: 1fr;
-    min-height: 80px;
-    padding: 6px 12px;
+    grid-template-columns: 1fr auto 1fr;
+    min-height: var(--titlebar-h);
+    padding: 0 12px;
+    gap: 8px;
   }
 
   .titlebar.electron.mac {
@@ -2243,11 +2244,14 @@ button.titlebar-chip {
   }
 
   .titlebar-center {
-    justify-content: stretch;
+    justify-content: center;
+    flex: 1;
+    max-width: 400px;
   }
 
   .command-palette {
     width: 100%;
+    max-width: 360px;
   }
 
   .editor-layout {
@@ -2256,6 +2260,37 @@ button.titlebar-chip {
 }
 
 @media (max-width: 920px) {
+  .titlebar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+
+  .titlebar-center {
+    max-width: 300px;
+  }
+
+  .command-palette {
+    max-width: 100%;
+  }
+
+  .command-palette span {
+    display: inline;
+  }
+
+  .command-palette kbd {
+    display: inline-flex;
+  }
+
+  .search-popup {
+    width: 95vw;
+    max-height: 80vh;
+  }
+
+  .search-popup-shortcuts {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
   .sidebar-layout {
     grid-template-columns: var(--rail-w) 1fr;
   }

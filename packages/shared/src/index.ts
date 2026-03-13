@@ -37,7 +37,8 @@ export const providerIdSchema = z.enum([
   "copilot",
   "openrouter",
   "anthropic",
-  "openai"
+  "openai",
+  "ollama"
 ]);
 
 export const providerStatusSchema = z.enum([

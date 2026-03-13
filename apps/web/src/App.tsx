@@ -662,6 +662,8 @@ export default function App() {
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
             .catch(() => undefined);
+          // Refresh workspace after AI completes (new files may have been created)
+          void loadWorkspaceRef.current();
           // Refresh provider usage (rate limit headers may have updated)
           fetchProviderUsage();
           es.close();
@@ -675,6 +677,8 @@ export default function App() {
           fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
             .then((payload) => setSessionDetail(payload))
             .catch(() => undefined);
+          // Refresh workspace after error (files may have been partially written)
+          void loadWorkspaceRef.current();
           es.close();
           eventSourceRef.current = null;
         }
@@ -761,9 +765,10 @@ export default function App() {
       if (data.ok) {
         // Put prompt text back into input
         if (data.prompt) setPrompt(data.prompt);
-        // Reload session
+        // Reload session and workspace
         const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
         setSessionDetail(payload);
+        void loadWorkspace();
       }
     } catch {
       // Ignore
@@ -777,6 +782,7 @@ export default function App() {
       await fetch(`${serverUrl}/api/messages/${userMessageId}`, { method: "DELETE" });
       const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
       setSessionDetail(payload);
+      void loadWorkspace();
     } catch {
       // Ignore
     }
@@ -1256,17 +1262,12 @@ export default function App() {
     setPendingPermissions([]);
   }, [activeSessionId]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadWorkspace().catch(() => undefined);
-      // Only poll session detail when NOT actively streaming (SSE handles that)
-      if (activeSessionId && !eventSourceRef.current) {
-        void loadSession(activeSessionId).catch(() => undefined);
-      }
-    }, 2500);
-
-    return () => window.clearInterval(timer);
-  }, [activeSessionId]);
+  // Event-driven refresh: no more polling. Refresh only when events happen.
+  // Use refs so we can call these from anywhere without dependency issues
+  const loadWorkspaceRef = useRef(loadWorkspace);
+  const loadSessionRef = useRef(loadSession);
+  loadWorkspaceRef.current = loadWorkspace;
+  loadSessionRef.current = loadSession;
 
   // Auto-dismiss error toast after 6 seconds
   useEffect(() => {
