@@ -2305,7 +2305,13 @@ function sendJson(response: JsonResponse, statusCode: number, payload: unknown) 
 }
 
 async function collectFiles(directory: string): Promise<FileEntry[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    // Directory doesn't exist or is not accessible
+    return [];
+  }
   const files: FileEntry[] = [];
 
   for (const entry of entries) {
@@ -2403,7 +2409,16 @@ function attachMessage(
 }
 
 async function buildWorkspaceSnapshot() {
-  const files = await collectFiles(workspaceRoot);
+  // Check if workspace root exists
+  let workspaceExists = false;
+  try {
+    await stat(workspaceRoot);
+    workspaceExists = true;
+  } catch {
+    // Workspace directory doesn't exist
+  }
+
+  const files = workspaceExists ? await collectFiles(workspaceRoot) : [];
   const sessions = Array.from(sessionStore.values())
     .filter((s) => s.workspace === workspaceRoot)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -2411,15 +2426,17 @@ async function buildWorkspaceSnapshot() {
 
   // Detect git branch
   let branch: string | undefined;
-  try {
-    branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
-  } catch {
-    // Not a git repo or git not available
+  if (workspaceExists) {
+    try {
+      branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+    } catch {
+      // Not a git repo or git not available
+    }
   }
 
-  const skills = resolvedConfig?.skills?.enabled === false
-    ? []
-    : await listSkills(workspaceRoot, resolvedConfig?.skills?.paths ?? []);
+  const skills = workspaceExists && resolvedConfig?.skills?.enabled !== false
+    ? await listSkills(workspaceRoot, resolvedConfig?.skills?.paths ?? [])
+    : [];
 
   const agents = resolveAgents(resolvedConfig).map((agent) => ({
     id: agent.id,
@@ -2649,7 +2666,13 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url === "/api/workspace") {
-      sendJson(response, 200, await buildWorkspaceSnapshot());
+      try {
+        sendJson(response, 200, await buildWorkspaceSnapshot());
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to build workspace snapshot";
+        logger.error("workspace-snapshot-failed", { error: message, workspaceRoot });
+        sendJson(response, 500, { error: message });
+      }
       return;
     }
 
