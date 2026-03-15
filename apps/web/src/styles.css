@@ -732,7 +732,9 @@ button.titlebar-chip {
   justify-content: center;
   cursor: pointer;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-  transition: background 0.15s, transform 0.15s;
+  transition:
+    background 0.15s,
+    transform 0.15s;
   z-index: 100;
 }
 
@@ -1960,11 +1962,10 @@ button.titlebar-chip {
   border-left: 1px solid var(--border-weaker-base);
   padding: 8px;
   background: var(--background-strong);
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: hidden;
+  overflow: visible;
   height: 100%;
 }
 
@@ -1989,13 +1990,11 @@ button.titlebar-chip {
 }
 
 .tree-root {
-  display: flex;
-  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  height: 100%;
+  height: auto;
 }
 
 .tree-group + .tree-group {
@@ -2567,7 +2566,6 @@ button.titlebar-chip {
   }
 
   .editor-sidebar {
-    max-height: 200px;
     border-right: 0;
     border-bottom: 1px solid var(--border-weaker-base);
   }
