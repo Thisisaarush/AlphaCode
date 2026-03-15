@@ -2086,10 +2086,30 @@ button.titlebar-chip {
   padding: 0 12px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   border-top: 1px solid var(--border-weaker-base);
   flex-shrink: 0;
+}
+
+.auto-save-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-weak);
+  cursor: pointer;
+  margin-right: auto;
+}
+
+.auto-save-toggle input {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.auto-save-toggle:hover {
+  color: var(--text-base);
 }
 
 /* ===== Terminal / Bottom panel ===== */

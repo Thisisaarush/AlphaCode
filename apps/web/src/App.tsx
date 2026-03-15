@@ -450,6 +450,8 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chat");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [autoSave, setAutoSave] = useState(() => localStorage.getItem("ac:autoSave") === "true");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState(
     () => localStorage.getItem("ac:sessionId") || "",
@@ -3563,6 +3565,14 @@ export default function App() {
                               ...current,
                               [activeFile.id]: value ?? "",
                             }));
+                            if (autoSave && activeFile) {
+                              if (autoSaveTimerRef.current) {
+                                clearTimeout(autoSaveTimerRef.current);
+                              }
+                              autoSaveTimerRef.current = setTimeout(() => {
+                                void handleSaveFile();
+                              }, 1000);
+                            }
                           }}
                           options={{
                             minimap: { enabled: false },
@@ -3663,6 +3673,14 @@ export default function App() {
                         <Search size={12} />
                         <span>Refresh</span>
                       </button>
+                      <label className="auto-save-toggle">
+                        <input
+                          type="checkbox"
+                          checked={autoSave}
+                          onChange={(e) => setAutoSave(e.target.checked)}
+                        />
+                        <span>Auto-save</span>
+                      </label>
                       <button
                         className="titlebar-action primary"
                         type="button"
