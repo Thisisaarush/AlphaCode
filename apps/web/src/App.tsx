@@ -15,7 +15,6 @@ import {
   ChevronRight,
   Check,
   CircleAlert,
-  Command,
   Copy,
   ExternalLink,
   Eye,
@@ -72,11 +71,6 @@ const isMac = electronBridge?.platform === "darwin";
 type FileItem = WorkspaceSnapshot["workspace"]["files"][number];
 type DockTab = "terminal" | "changes" | "activity";
 type SidebarTab = "chat" | "git";
-type SkillItem = {
-  id: string;
-  name: string;
-  path: string;
-};
 type AgentItem = {
   id: string;
   label: string;
@@ -192,21 +186,6 @@ function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
   return String(tokens);
-}
-
-function modelMatchesMode(modelId: string, mode: string): boolean {
-  const lower = modelId.toLowerCase();
-  switch (mode) {
-    case "reasoning":
-      return lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("o4");
-    case "code":
-      return lower.includes("codex") || lower.includes("code") || lower.includes("grok");
-    case "fast":
-      return lower.includes("mini") || lower.includes("flash") || lower.includes("haiku");
-    case "general":
-    default:
-      return true;
-  }
 }
 
 function highlightLabel(label: string, query: string): React.ReactNode {
@@ -508,10 +487,7 @@ export default function App() {
   const [projectError, setProjectError] = useState("");
   const [projectPathInput, setProjectPathInput] = useState("");
   const projectFilterRef = useRef<HTMLInputElement>(null);
-  const [skills, setSkills] = useState<SkillItem[]>([]);
-  const [activeSkill, setActiveSkill] = useState<SkillItem | null>(null);
-  const [skillContent, setSkillContent] = useState("");
-  const [skillLoading, setSkillLoading] = useState(false);
+
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string>("");
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
@@ -1100,7 +1076,6 @@ export default function App() {
     const payload = await fetchJson<WorkspaceSnapshot>(`${serverUrl}/api/workspace`);
     setSnapshot(payload);
     setTerminalRuns(payload.recentRuns);
-    setSkills(payload.skills ?? []);
     setAgents(payload.agents ?? []);
     setActiveAgentId(payload.activeAgentId ?? "");
     setPlugins(payload.plugins ?? []);
@@ -1141,33 +1116,6 @@ export default function App() {
     });
   }
 
-  async function reloadConfig() {
-    try {
-      await fetchJson(`${serverUrl}/api/config/reload`, { method: "POST" });
-      await loadWorkspace();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to reload config";
-      setError(msg);
-    }
-  }
-
-  async function openSkill(skill: SkillItem) {
-    setActiveSkill(skill);
-    setSkillLoading(true);
-    try {
-      const payload = await fetchJson<{ path: string; content: string }>(
-        `${serverUrl}/api/skills?path=${encodeURIComponent(skill.path)}`
-      );
-      setSkillContent(payload.content);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load skill";
-      setError(msg);
-      setSkillContent("");
-    } finally {
-      setSkillLoading(false);
-    }
-  }
-
   async function switchAgent(agentId: string) {
     try {
       await fetchJson(`${serverUrl}/api/agents/switch`, {
@@ -1178,16 +1126,6 @@ export default function App() {
       setActiveAgentId(agentId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to switch agent";
-      setError(msg);
-    }
-  }
-
-  async function reloadPlugins() {
-    try {
-      await fetchJson(`${serverUrl}/api/plugins/reload`, { method: "POST" });
-      await loadWorkspace();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to reload plugins";
       setError(msg);
     }
   }
@@ -2044,15 +1982,7 @@ export default function App() {
                                     <span className="message-mode">{mode}</span>
                                     <span className="message-time">{formatTime(pair.userMessage.createdAt)}</span>
                                     <span className="message-info">{prettifyModelId(sessionDetail.model)}</span>
-                                    <div className="message-actions-inline">
-                                      <button
-                                        className="message-action-btn"
-                                        type="button"
-                                        title="Fork to new session"
-                                        onClick={() => void handleForkSession(pair.userMessage.id)}
-                                      >
-                                        <GitBranch size={12} />
-                                      </button>
+                                      <div className="message-actions-inline">
                                       <button
                                         className="message-action-btn"
                                         type="button"
@@ -2307,21 +2237,20 @@ export default function App() {
                     )}
                   </div>
 
-                  {showScrollButton && sessionDetail && (
-                    <button
-                      className="scroll-to-bottom-btn"
-                      type="button"
-                      onClick={() => messageEndRef.current?.scrollIntoView({ behavior: "smooth" })}
-                      title="Scroll to bottom"
-                    >
-                      <ChevronDown size={16} />
-                    </button>
-                  )}
-
                   {null}
 
                   {/* Floating dock composer */}
                   <div className="dock-area">
+                    {showScrollButton && sessionDetail && (
+                      <button
+                        className="scroll-to-bottom-btn"
+                        type="button"
+                        onClick={() => messageEndRef.current?.scrollIntoView({ behavior: "smooth" })}
+                        title="Scroll to bottom"
+                      >
+                        <ChevronDown size={16} />
+                      </button>
+                    )}
                     <div className="dock-surface">
                       <div className="dock-composer">
                         <div className="dock-textarea-wrap" style={{ position: "relative" }}>
