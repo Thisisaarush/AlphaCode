@@ -211,14 +211,19 @@ button.titlebar-chip {
 .toggle-panel-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 24px;
+  gap: 4px;
   height: 24px;
-  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  border: 1px solid var(--border-weak-base);
+  border-radius: var(--radius-md);
+  background: var(--surface-base);
   color: var(--text-weak);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
   transition:
-    background 0.12s,
-    color 0.12s;
+    background 0.1s,
+    color 0.1s;
 }
 
 .toggle-panel-btn:hover {

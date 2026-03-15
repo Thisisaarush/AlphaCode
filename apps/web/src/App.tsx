@@ -3598,7 +3598,7 @@ export default function App() {
                           ) => {
                             const key = item.path;
                             if (item.type === "folder") {
-                              const expanded = expandedGroups[key] ?? true;
+                              const expanded = expandedGroups[key] ?? false;
                               return (
                                 <div key={key} className="tree-group">
                                   <button

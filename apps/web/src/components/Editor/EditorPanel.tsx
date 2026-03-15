@@ -27,6 +27,7 @@ interface EditorPanelProps {
   drafts: Record<string, string>;
   changedFiles: FileItem[];
   expandedGroups: Record<string, boolean>;
+  files: FileItem[];
   onFileSelect: (fileId: string) => void;
   onFileClose: (fileId: string) => void;
   onContentChange: (fileId: string, content: string) => void;
@@ -173,6 +174,7 @@ export function EditorPanel({
   drafts,
   changedFiles,
   expandedGroups,
+  files,
   onFileSelect,
   onFileClose,
   onContentChange,
@@ -185,7 +187,6 @@ export function EditorPanel({
 }: EditorPanelProps) {
   if (!show) return null;
 
-  const files: FileItem[] = []; // Would come from props
   const fileTree = useMemo(() => buildTree(files), [files]);
   const filteredTree = useMemo(
     () => filterTree(fileTree, treeFilter.trim()),
