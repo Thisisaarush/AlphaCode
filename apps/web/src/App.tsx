@@ -80,7 +80,7 @@ const isElectron = electronBridge !== null;
 const isMac = electronBridge?.platform === "darwin";
 
 type FileItem = WorkspaceSnapshot["workspace"]["files"][number];
-type DockTab = "terminal" | "changes" | "activity";
+type DockTab = "terminal";
 type SidebarTab = "chat" | "git";
 type AgentItem = {
   id: string;
@@ -2272,11 +2272,6 @@ export default function App() {
                       ))
                     )}
                   </div>
-
-                  <div className="sidebar-footer-note">
-                    <span>Recent runs</span>
-                    <strong>{terminalRuns.length}</strong>
-                  </div>
                 </>
               ) : null}
 
@@ -3375,22 +3370,6 @@ export default function App() {
                             <TerminalSquare size={13} />
                             <span>Terminal</span>
                           </button>
-                          <button
-                            className={`terminal-tab${dockTab === "changes" ? " active" : ""}`}
-                            type="button"
-                            onClick={() => setDockTab("changes")}
-                          >
-                            <FileDiff size={13} />
-                            <span>Changes</span>
-                          </button>
-                          <button
-                            className={`terminal-tab${dockTab === "activity" ? " active" : ""}`}
-                            type="button"
-                            onClick={() => setDockTab("activity")}
-                          >
-                            <Bot size={13} />
-                            <span>Activity</span>
-                          </button>
                         </div>
 
                         <div className="terminal-status-row">
@@ -3447,56 +3426,6 @@ export default function App() {
                           }}
                         />
 
-                        {dockTab === "changes" ? (
-                          <div className="terminal-body-scroll compact-scroll">
-                            {changedFiles.length === 0 ? (
-                              <p className="empty-inline">No unsaved files.</p>
-                            ) : (
-                              <div className="changes-grid">
-                                {changedFiles.map((file) => (
-                                  <button
-                                    key={file.id}
-                                    className="change-row"
-                                    type="button"
-                                    onClick={() => openFile(file.id)}
-                                  >
-                                    <strong>{file.name}</strong>
-                                    <span>{file.path}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-
-                        {dockTab === "activity" ? (
-                          <div className="terminal-body-scroll compact-scroll">
-                            {sessionDetail ? (
-                              <div className="activity-list">
-                                {sessionDetail.messages
-                                  .filter(
-                                    (message) => message.role === "system",
-                                  )
-                                  .map((message) => (
-                                    <article
-                                      key={message.id}
-                                      className="activity-row"
-                                    >
-                                      <span>{message.content}</span>
-                                      <small>
-                                        {formatTime(message.createdAt)}
-                                      </small>
-                                    </article>
-                                  ))}
-                              </div>
-                            ) : (
-                              <p className="empty-inline">
-                                Session activity appears after you start a
-                                thread.
-                              </p>
-                            )}
-                          </div>
-                        ) : null}
                       </div>
                     </section>
                   </Panel>
