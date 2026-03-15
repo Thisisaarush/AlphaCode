@@ -1705,12 +1705,15 @@ export default function App() {
   }
 
   async function handleSaveFile() {
+    console.log("handleSaveFile called", { activeFile, drafts });
     if (!activeFile) {
+      console.log("No active file");
       return;
     }
     setSaving(true);
     setError("");
     try {
+      console.log("Saving file:", activeFile.path);
       await fetchJson(`${serverUrl}/api/file`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -1720,7 +1723,9 @@ export default function App() {
         }),
       });
       await loadWorkspace();
+      console.log("File saved successfully");
     } catch (nextError) {
+      console.error("Save error:", nextError);
       setError(
         nextError instanceof Error ? nextError.message : "Failed to save file",
       );
