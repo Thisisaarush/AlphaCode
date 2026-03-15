@@ -435,6 +435,8 @@ export default function App() {
   const [activeFileId, setActiveFileId] = useState("");
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const activeFileRef = useRef<ReturnType<typeof useState>[0]>(null);
+  const draftsRef = useRef<Record<string, string>>({});
   const [provider, setProvider] = useState(
     () => localStorage.getItem("ac:provider") || "",
   );
@@ -1263,11 +1265,6 @@ export default function App() {
     showSettings,
     showBranchSwitcher,
     showProjectSwitcher,
-    activeFileId,
-    openFileIds,
-    files,
-    drafts,
-    activeFile,
   ]);
 
   const isShareRoute = window.location.pathname.startsWith("/share/");
@@ -1644,6 +1641,8 @@ export default function App() {
     if (!fallbackId) return null;
     return files.find((file) => file.id === fallbackId) ?? null;
   })();
+  activeFileRef.current = activeFile;
+  draftsRef.current = drafts;
   const fileTree = useMemo(() => buildTree(files), [files]);
   const filteredTree = useMemo(
     () => filterTree(fileTree, treeFilter.trim()),
@@ -1710,21 +1709,23 @@ export default function App() {
   }
 
   async function handleSaveFile() {
-    console.log("handleSaveFile called", { activeFile, drafts });
-    if (!activeFile) {
+    const file = activeFileRef.current;
+    const fileDrafts = draftsRef.current;
+    console.log("handleSaveFile called", { file, fileDrafts });
+    if (!file) {
       console.log("No active file");
       return;
     }
     setSaving(true);
     setError("");
     try {
-      console.log("Saving file:", activeFile.path);
+      console.log("Saving file:", file.path);
       await fetchJson(`${serverUrl}/api/file`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          path: activeFile.path,
-          content: drafts[activeFile.id] ?? activeFile.content,
+          path: file.path,
+          content: fileDrafts[file.id] ?? file.content,
         }),
       });
       await loadWorkspace();
