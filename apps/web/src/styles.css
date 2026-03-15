@@ -1947,9 +1947,13 @@ button.titlebar-chip {
 .editor-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   height: 100%;
+}
+
+.editor-layout.has-sidebar {
+  grid-template-columns: minmax(0, 1fr) 240px;
 }
 
 .editor-sidebar {
@@ -2067,6 +2071,7 @@ button.titlebar-chip {
   background: var(--background-base);
   min-height: 0;
   overflow: hidden;
+  height: 100%;
 }
 
 .empty-editor {
