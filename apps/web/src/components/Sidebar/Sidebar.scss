@@ -1,0 +1,251 @@
+.sidebar-layout {
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--rail-w) var(--sidebar-panel-w);
+  background: var(--background-base);
+  border-right: 1px solid var(--border-weaker-base);
+}
+
+.sidebar-layout.collapsed {
+  grid-template-columns: var(--rail-w) 0px;
+  overflow: hidden;
+}
+
+.sidebar-layout.collapsed .sidebar-panel {
+  display: none;
+  overflow: hidden;
+}
+
+.sidebar-rail {
+  border-right: 1px solid var(--border-weaker-base);
+  background: var(--background-base);
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.rail-button {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-weak);
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.rail-button:hover {
+  background: var(--surface-hover);
+  color: var(--text-base);
+}
+
+.rail-button.active {
+  background: var(--surface-strong);
+  color: var(--text-strong);
+}
+
+.rail-spacer {
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar-panel {
+  background: var(--background-strong);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-header {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-weaker-base);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.pane-kicker {
+  display: block;
+  color: var(--text-weaker);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+}
+
+.pane-header h2 {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-strong);
+}
+
+.session-list {
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.session-row {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  text-align: left;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 0.1s;
+  position: relative;
+}
+
+.session-row-main {
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.session-row:hover {
+  background: var(--surface-hover);
+}
+
+.session-row.active {
+  background: var(--surface-base);
+  border-color: var(--border-weak-base);
+}
+
+.session-delete-btn,
+.session-share-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-weaker);
+  cursor: pointer;
+  border: none;
+  margin-right: 4px;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+
+.session-row:hover .session-delete-btn,
+.session-row:hover .session-share-btn {
+  display: flex;
+}
+
+.session-delete-btn:hover {
+  color: var(--error);
+  background: rgba(252, 83, 58, 0.1);
+}
+
+.session-share-btn:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  align-self: center;
+  background: var(--text-weaker);
+}
+
+.session-status.running {
+  background: var(--success);
+}
+
+.session-status.review {
+  background: var(--warning);
+}
+
+.session-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-copy small {
+  color: var(--text-weak);
+  font-size: 12px;
+}
+
+.sidebar-footer-note {
+  min-height: 36px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-weak);
+  font-size: 12px;
+  border-top: 1px solid var(--border-weaker-base);
+  flex-shrink: 0;
+}
+
+.sidebar-footer-note.compact {
+  min-height: 32px;
+}
+
+.change-list {
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.change-card {
+  width: 100%;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-base);
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.change-card:hover {
+  background: var(--surface-hover);
+}

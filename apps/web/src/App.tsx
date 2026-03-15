@@ -46,10 +46,21 @@ import {
   Wrench,
   X,
   PanelLeft,
-  Zap
+  Zap,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { APP_NAME, type AuthStatusResponse, type CommandRun, type FileChange, type GitHubDeviceCodeResponse, type GitHubPollResponse, type ProviderId, type SessionDetail, type SessionMessage, type WorkspaceSnapshot } from "@alpha-code/shared";
+import {
+  APP_NAME,
+  type AuthStatusResponse,
+  type CommandRun,
+  type FileChange,
+  type GitHubDeviceCodeResponse,
+  type GitHubPollResponse,
+  type ProviderId,
+  type SessionDetail,
+  type SessionMessage,
+  type WorkspaceSnapshot,
+} from "@alpha-code/shared";
 
 /* Electron preload exposes window.alphaCode on desktop */
 interface AlphaCodeBridge {
@@ -103,48 +114,79 @@ const wsUrl = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:3031";
 /** Known model context window sizes (in tokens) - matches server defaults */
 const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   // GPT-5
-  "gpt-5": 1000000, "gpt-5.1": 1000000, "gpt-5.2": 1000000, "gpt-5.3": 1000000, "gpt-5.4": 1000000,
-  "gpt-5-mini": 1000000, "gpt-5.1-mini": 1000000, "gpt-5-codex": 1000000,
+  "gpt-5": 1000000,
+  "gpt-5.1": 1000000,
+  "gpt-5.2": 1000000,
+  "gpt-5.3": 1000000,
+  "gpt-5.4": 1000000,
+  "gpt-5-mini": 1000000,
+  "gpt-5.1-mini": 1000000,
+  "gpt-5-codex": 1000000,
   // GPT-4.5
-  "gpt-4.5": 1000000, "gpt-4.5-mini": 1000000,
+  "gpt-4.5": 1000000,
+  "gpt-4.5-mini": 1000000,
   // GPT-4.1
-  "gpt-4.1": 1000000, "gpt-4.1-mini": 1000000, "gpt-4.1-nano": 1000000,
+  "gpt-4.1": 1000000,
+  "gpt-4.1-mini": 1000000,
+  "gpt-4.1-nano": 1000000,
   // GPT-4o
-  "gpt-4o": 128000, "gpt-4o-mini": 128000,
+  "gpt-4o": 128000,
+  "gpt-4o-mini": 128000,
   // GPT-4 Turbo
   "gpt-4-turbo": 128000,
   // GPT-4
   "gpt-4": 128000,
   // Reasoning
-  "o1": 200000, "o1-mini": 128000, "o1-preview": 200000, "o1-pro": 200000,
-  "o3": 200000, "o3-mini": 200000, "o3-pro": 200000,
+  o1: 200000,
+  "o1-mini": 128000,
+  "o1-preview": 200000,
+  "o1-pro": 200000,
+  o3: 200000,
+  "o3-mini": 200000,
+  "o3-pro": 200000,
   "o4-mini": 200000,
   // Claude 4
-  "claude-opus-4-20250514": 200000, "claude-opus-4-6-20250514": 200000,
-  "claude-sonnet-4-20250514": 200000, "claude-sonnet-4-6-20250514": 200000,
+  "claude-opus-4-20250514": 200000,
+  "claude-opus-4-6-20250514": 200000,
+  "claude-sonnet-4-20250514": 200000,
+  "claude-sonnet-4-6-20250514": 200000,
   "claude-haiku-4-20250514": 200000,
   // Claude 3.5
-  "claude-3.5-sonnet": 200000, "claude-3.5-haiku": 200000,
+  "claude-3.5-sonnet": 200000,
+  "claude-3.5-haiku": 200000,
   // Claude 3
-  "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
+  "claude-3-opus": 200000,
+  "claude-3-sonnet": 200000,
+  "claude-3-haiku": 200000,
   // Gemini 2.5
-  "gemini-2.5-pro": 2000000, "gemini-2.5-flash": 1000000,
+  "gemini-2.5-pro": 2000000,
+  "gemini-2.5-flash": 1000000,
   // Gemini 2.0
-  "gemini-2.0-flash": 1000000, "gemini-2.0-flash-lite": 1000000,
+  "gemini-2.0-flash": 1000000,
+  "gemini-2.0-flash-lite": 1000000,
   // Gemini 1.5
-  "gemini-1.5-pro": 2000000, "gemini-1.5-flash": 1000000,
+  "gemini-1.5-pro": 2000000,
+  "gemini-1.5-flash": 1000000,
   // Grok
-  "grok-2": 131072, "grok-beta": 131072, "grok-code-fast-1": 131072,
+  "grok-2": 131072,
+  "grok-beta": 131072,
+  "grok-code-fast-1": 131072,
   // ChatGPT
   "chatgpt-4o-latest": 128000,
   // DeepSeek
-  "deepseek-chat": 64000, "deepseek-coder": 64000, "deepseek-reasoner": 64000,
+  "deepseek-chat": 64000,
+  "deepseek-coder": 64000,
+  "deepseek-reasoner": 64000,
   // Llama
-  "llama-4-maverick": 200000, "llama-3.3-70b": 128000, "llama-3.1-405b": 128000,
+  "llama-4-maverick": 200000,
+  "llama-3.3-70b": 128000,
+  "llama-3.1-405b": 128000,
   // Mistral
-  "mistral-large": 128000, "mistral-small": 128000,
+  "mistral-large": 128000,
+  "mistral-small": 128000,
   // CodeLlama
-  "codellama-70b": 128000, "codellama-34b": 128000,
+  "codellama-70b": 128000,
+  "codellama-34b": 128000,
   // Qwen
   "qwen2.5-coder": 32768,
   // Kimi
@@ -154,15 +196,20 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
 };
 
 /** Get context limit for a model - uses server-provided limits first, then falls back to hardcoded */
-function getModelContextLimit(modelId: string, serverLimits?: Record<string, number>): number {
+function getModelContextLimit(
+  modelId: string,
+  serverLimits?: Record<string, number>,
+): number {
   // First check server-provided limits
   if (serverLimits && serverLimits[modelId]) return serverLimits[modelId];
-  
+
   // Fall back to hardcoded
   // Exact match
   if (MODEL_CONTEXT_LIMITS[modelId]) return MODEL_CONTEXT_LIMITS[modelId];
   // Strip date suffix and try again
-  const base = modelId.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
+  const base = modelId
+    .replace(/-\d{4}-\d{2}-\d{2}$/, "")
+    .replace(/-\d{8}$/, "");
   if (MODEL_CONTEXT_LIMITS[base]) return MODEL_CONTEXT_LIMITS[base];
   // Prefix match
   for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
@@ -173,7 +220,10 @@ function getModelContextLimit(modelId: string, serverLimits?: Record<string, num
 }
 
 /** Format context limit for display */
-function getModelContextLabel(modelId: string, serverLimits?: Record<string, number>): string | undefined {
+function getModelContextLabel(
+  modelId: string,
+  serverLimits?: Record<string, number>,
+): string | undefined {
   const limit = getModelContextLimit(modelId, serverLimits);
   if (limit >= 1000000) return `${(limit / 1000000).toFixed(1)}M`;
   if (limit >= 100000) return `${(limit / 1000).toFixed(0)}K`;
@@ -201,15 +251,19 @@ function highlightLabel(label: string, query: string): React.ReactNode {
   );
 }
 
-const railItems: Array<{ key: SidebarTab; icon: typeof MessageSquare; label: string }> = [
+const railItems: Array<{
+  key: SidebarTab;
+  icon: typeof MessageSquare;
+  label: string;
+}> = [
   { key: "chat", icon: MessageSquare, label: "Threads" },
-  { key: "git", icon: FolderGit2, label: "Changes" }
+  { key: "git", icon: FolderGit2, label: "Changes" },
 ];
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
-    minute: "2-digit"
+    minute: "2-digit",
   }).format(new Date(value));
 }
 
@@ -241,10 +295,10 @@ function prettifyModelId(raw: string): string {
     "gpt-5.3": "GPT 5.3",
     "gpt-5.3-codex": "GPT 5.3 Codex",
     "gpt-5.4": "GPT 5.4",
-    "o1": "O1",
+    o1: "O1",
     "o1-mini": "O1 Mini",
     "o1-preview": "O1 Preview",
-    "o3": "O3",
+    o3: "O3",
     "o3-mini": "O3 Mini",
     "o4-mini": "O4 Mini",
     "chatgpt-4o-latest": "ChatGPT 4o Latest",
@@ -262,7 +316,9 @@ function prettifyModelId(raw: string): string {
   };
 
   // Strip date suffixes like -20250514, -2025-04-14
-  const stripped = raw.replace(/-\d{4}-?\d{2}-?\d{2}$/, "").replace(/-\d{8}$/, "");
+  const stripped = raw
+    .replace(/-\d{4}-?\d{2}-?\d{2}$/, "")
+    .replace(/-\d{8}$/, "");
   if (known[stripped]) return known[stripped];
   if (known[raw]) return known[raw];
 
@@ -335,7 +391,7 @@ function buildTree(items: FileItem[]): TreeNode {
         child = {
           name: part,
           path: currentPath,
-          type: isFile ? "file" : "folder"
+          type: isFile ? "file" : "folder",
         };
         current.children.push(child);
       }
@@ -379,9 +435,15 @@ export default function App() {
   const [activeFileId, setActiveFileId] = useState("");
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [provider, setProvider] = useState(() => localStorage.getItem("ac:provider") || "");
-  const [model, setModel] = useState(() => localStorage.getItem("ac:model") || "");
-  const [mode, setMode] = useState<"plan" | "build">(() => (localStorage.getItem("ac:mode") as "plan" | "build") || "build");
+  const [provider, setProvider] = useState(
+    () => localStorage.getItem("ac:provider") || "",
+  );
+  const [model, setModel] = useState(
+    () => localStorage.getItem("ac:model") || "",
+  );
+  const [mode, setMode] = useState<"plan" | "build">(
+    () => (localStorage.getItem("ac:mode") as "plan" | "build") || "build",
+  );
   const [prompt, setPrompt] = useState("");
   const [terminalRuns, setTerminalRuns] = useState<CommandRun[]>([]);
   const [dockTab, setDockTab] = useState<DockTab>("terminal");
@@ -389,17 +451,27 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState(() => localStorage.getItem("ac:sessionId") || "");
-  const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [activeSessionId, setActiveSessionId] = useState(
+    () => localStorage.getItem("ac:sessionId") || "",
+  );
+  const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(
+    null,
+  );
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {},
+  );
   const [treeFilter, setTreeFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState("");
   const [shareNotice, setShareNotice] = useState("");
-  const [sharedSession, setSharedSession] = useState<SharedSession | null>(null);
+  const [sharedSession, setSharedSession] = useState<SharedSession | null>(
+    null,
+  );
   const [shareLoading, setShareLoading] = useState(false);
   const [shareError, setShareError] = useState("");
-  const [webPassword, setWebPassword] = useState(() => localStorage.getItem("ac:webPassword") || "");
+  const [webPassword, setWebPassword] = useState(
+    () => localStorage.getItem("ac:webPassword") || "",
+  );
   const [ciContext, setCiContext] = useState<CiContext | null>(null);
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -424,10 +496,13 @@ export default function App() {
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
-  const [apiKeyVisible, setApiKeyVisible] = useState<Record<string, boolean>>({});
+  const [apiKeyVisible, setApiKeyVisible] = useState<Record<string, boolean>>(
+    {},
+  );
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [removingKey, setRemovingKey] = useState<string | null>(null);
-  const [githubDevice, setGithubDevice] = useState<GitHubDeviceCodeResponse | null>(null);
+  const [githubDevice, setGithubDevice] =
+    useState<GitHubDeviceCodeResponse | null>(null);
   const [githubPolling, setGithubPolling] = useState(false);
   const [githubStarting, setGithubStarting] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -436,26 +511,32 @@ export default function App() {
 
   // Streaming state
   const [streamingContent, setStreamingContent] = useState("");
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
+    null,
+  );
   const eventSourceRef = useRef<EventSource | null>(null);
   const streamingContentRef = useRef("");
 
   // Tool call tracking during streaming
-  const [activeToolCalls, setActiveToolCalls] = useState<Array<{
-    toolCallId: string;
-    toolName: string;
-    arguments?: string;
-    result?: string;
-    isError?: boolean;
-    fileChange?: FileChange;
-    status: "running" | "done" | "error";
-  }>>([]);
-  const [pendingPermissions, setPendingPermissions] = useState<Array<{
-    toolCallId: string;
-    toolName: string;
-    action: string;
-    messageId: string;
-  }>>([]);
+  const [activeToolCalls, setActiveToolCalls] = useState<
+    Array<{
+      toolCallId: string;
+      toolName: string;
+      arguments?: string;
+      result?: string;
+      isError?: boolean;
+      fileChange?: FileChange;
+      status: "running" | "done" | "error";
+    }>
+  >([]);
+  const [pendingPermissions, setPendingPermissions] = useState<
+    Array<{
+      toolCallId: string;
+      toolName: string;
+      action: string;
+      messageId: string;
+    }>
+  >([]);
 
   // Tracks whether user explicitly cleared the session (prevents auto-select on next poll)
   const userClearedSessionRef = useRef(false);
@@ -481,7 +562,9 @@ export default function App() {
 
   // Project switcher state
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false);
-  const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string; lastOpened: number }>>([]);
+  const [recentProjects, setRecentProjects] = useState<
+    Array<{ path: string; name: string; lastOpened: number }>
+  >([]);
   const [projectFilter, setProjectFilter] = useState("");
   const [projectLoading, setProjectLoading] = useState(false);
   const [projectError, setProjectError] = useState("");
@@ -493,14 +576,22 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
 
   // Model toggles — persisted to localStorage, keyed by raw model ID
-  const [disabledModels, setDisabledModels] = useState<Record<string, boolean>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("ac:disabledModels") || "{}") as Record<string, boolean>;
-    } catch { return {}; }
-  });
+  const [disabledModels, setDisabledModels] = useState<Record<string, boolean>>(
+    () => {
+      try {
+        return JSON.parse(
+          localStorage.getItem("ac:disabledModels") || "{}",
+        ) as Record<string, boolean>;
+      } catch {
+        return {};
+      }
+    },
+  );
 
   // Chat autocomplete state
-  const [autocompleteType, setAutocompleteType] = useState<"@" | "/" | null>(null);
+  const [autocompleteType, setAutocompleteType] = useState<"@" | "/" | null>(
+    null,
+  );
   const [autocompleteQuery, setAutocompleteQuery] = useState("");
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
 
@@ -511,20 +602,32 @@ export default function App() {
     totalTokens: number;
     requestCount: number;
     estimatedContextTokens: number; // Total tokens in conversation including input/output
-  }>({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
+  }>({
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    estimatedContextTokens: 0,
+  });
 
   // Provider-level usage / quota tracking
-  const [providerUsage, setProviderUsage] = useState<Array<{
-    providerId: string;
-    usagePercent: number | null;
-    usageLabel: string;
-    details: string;
-    hasQuota: boolean;
-  }>>([]);
-  const providerUsageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [providerUsage, setProviderUsage] = useState<
+    Array<{
+      providerId: string;
+      usagePercent: number | null;
+      usageLabel: string;
+      details: string;
+      hasQuota: boolean;
+    }>
+  >([]);
+  const providerUsageTimerRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
 
   // Model context limits from server
-  const [modelContextLimits, setModelContextLimits] = useState<Record<string, number>>({});
+  const [modelContextLimits, setModelContextLimits] = useState<
+    Record<string, number>
+  >({});
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const password = localStorage.getItem("ac:webPassword") || "";
@@ -536,32 +639,51 @@ export default function App() {
     }
     const response = await fetch(url, { ...init, headers });
     if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
-      throw new Error(body?.message ?? body?.error ?? `Request failed: ${response.status}`);
+      const body = (await response.json().catch(() => null)) as {
+        message?: string;
+        error?: string;
+      } | null;
+      throw new Error(
+        body?.message ?? body?.error ?? `Request failed: ${response.status}`,
+      );
     }
     return (await response.json()) as T;
   }
 
-  async function approvePermission(toolCallId: string, allow: boolean, remember: boolean) {
+  async function approvePermission(
+    toolCallId: string,
+    allow: boolean,
+    remember: boolean,
+  ) {
     if (!activeSessionId) return;
     try {
       await fetchJson(`${serverUrl}/api/permissions/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: activeSessionId, toolCallId, allow, remember })
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          toolCallId,
+          allow,
+          remember,
+        }),
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Permission update failed";
+      const msg =
+        err instanceof Error ? err.message : "Permission update failed";
       setError(msg);
     } finally {
-      setPendingPermissions((prev) => prev.filter((p) => p.toolCallId !== toolCallId));
+      setPendingPermissions((prev) =>
+        prev.filter((p) => p.toolCallId !== toolCallId),
+      );
     }
   }
 
   /** Fetch provider usage data from server */
   const fetchProviderUsage = useCallback(async () => {
     try {
-      const data = await fetch(`${serverUrl}/api/provider-usage`).then((r) => r.json()) as {
+      const data = (await fetch(`${serverUrl}/api/provider-usage`).then((r) =>
+        r.json(),
+      )) as {
         providers: Array<{
           providerId: string;
           usagePercent: number | null;
@@ -581,7 +703,8 @@ export default function App() {
     fetchProviderUsage();
     providerUsageTimerRef.current = setInterval(fetchProviderUsage, 60_000);
     return () => {
-      if (providerUsageTimerRef.current) clearInterval(providerUsageTimerRef.current);
+      if (providerUsageTimerRef.current)
+        clearInterval(providerUsageTimerRef.current);
     };
   }, [fetchProviderUsage]);
 
@@ -589,7 +712,10 @@ export default function App() {
   useEffect(() => {
     if (!showModelDropdown) return;
     function handleClickOutside(event: MouseEvent) {
-      if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
+      if (
+        modelDropdownRef.current &&
+        !modelDropdownRef.current.contains(event.target as Node)
+      ) {
         setShowModelDropdown(false);
       }
     }
@@ -598,137 +724,163 @@ export default function App() {
   }, [showModelDropdown]);
 
   /** Connect to SSE stream for a session. Call this after sending a message. */
-  const connectStream = useCallback((sessionId: string) => {
-    // Close any existing connection
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-
-    streamingContentRef.current = "";
-    setStreamingContent("");
-    setStreamingMessageId(null);
-    setActiveToolCalls([]);
-
-    const password = localStorage.getItem("ac:webPassword") || "";
-    const streamUrl = password
-      ? `${serverUrl}/api/sessions/${sessionId}/stream?token=${encodeURIComponent(password)}`
-      : `${serverUrl}/api/sessions/${sessionId}/stream`;
-    const es = new EventSource(streamUrl);
-    eventSourceRef.current = es;
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          type: "connected" | "token" | "done" | "error" | "tool_call" | "tool_result" | "permission_request";
-          messageId?: string;
-          token?: string;
-          error?: string;
-          usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
-          toolCallId?: string;
-          toolName?: string;
-          arguments?: string;
-          result?: string;
-          isError?: boolean;
-          fileChange?: FileChange;
-          action?: string;
-        };
-
-        if (data.type === "token" && data.token) {
-          if (data.messageId && !streamingContentRef.current) {
-            setStreamingMessageId(data.messageId);
-          }
-          streamingContentRef.current += data.token;
-          setStreamingContent(streamingContentRef.current);
-        } else if (data.type === "tool_call" && data.toolCallId) {
-          // A new tool call is starting — add it to the active list
-          setActiveToolCalls((prev) => [
-            ...prev,
-            {
-              toolCallId: data.toolCallId!,
-              toolName: data.toolName || "unknown",
-              arguments: data.arguments,
-              status: "running"
-            }
-          ]);
-          // Clear streaming content since the AI text portion for this round is done
-          // and we're now in tool execution phase
-          streamingContentRef.current = "";
-          setStreamingContent("");
-        } else if (data.type === "tool_result" && data.toolCallId) {
-          // A tool call completed — update its status and result
-          setActiveToolCalls((prev) =>
-            prev.map((tc) =>
-              tc.toolCallId === data.toolCallId
-                ? { ...tc, result: data.result, isError: data.isError, fileChange: data.fileChange, status: data.isError ? "error" : "done" }
-                : tc
-            )
-          );
-        } else if (data.type === "permission_request" && data.toolCallId) {
-          setPendingPermissions((prev) => ([
-            ...prev,
-            {
-              toolCallId: data.toolCallId!,
-              toolName: data.toolName || "unknown",
-              action: data.action || data.toolName || "unknown",
-              messageId: data.messageId || ""
-            }
-          ]));
-        } else if (data.type === "done") {
-          // Accumulate usage data if present
-          if (data.usage) {
-            setSessionUsage((prev) => ({
-              totalInputTokens: prev.totalInputTokens + data.usage!.inputTokens,
-              totalOutputTokens: prev.totalOutputTokens + data.usage!.outputTokens,
-              totalTokens: prev.totalTokens + data.usage!.totalTokens,
-              requestCount: prev.requestCount + 1,
-              // Context = total tokens in conversation (input + output so far)
-              estimatedContextTokens: prev.estimatedContextTokens + data.usage!.totalTokens,
-            }));
-          } else {
-            // Even without usage data, increment request count
-            setSessionUsage((prev) => ({ ...prev, requestCount: prev.requestCount + 1 }));
-          }
-          // Stream complete — reload session to get final message from server
-          setStreamingContent("");
-          setStreamingMessageId(null);
-          streamingContentRef.current = "";
-          setActiveToolCalls([]);
-          setPendingPermissions([]);
-          // Fetch the final session state
-          fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
-            .then((payload) => setSessionDetail(payload))
-            .catch(() => undefined);
-          // Refresh workspace after AI completes (new files may have been created)
-          void loadWorkspaceRef.current();
-          // Refresh provider usage (rate limit headers may have updated)
-          fetchProviderUsage();
-          es.close();
-          eventSourceRef.current = null;
-        } else if (data.type === "error") {
-          // Error — reload session and close
-          setStreamingContent("");
-          setStreamingMessageId(null);
-          streamingContentRef.current = "";
-          setActiveToolCalls([]);
-          fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
-            .then((payload) => setSessionDetail(payload))
-            .catch(() => undefined);
-          // Refresh workspace after error (files may have been partially written)
-          void loadWorkspaceRef.current();
-          es.close();
-          eventSourceRef.current = null;
-        }
-      } catch {
-        // Ignore malformed messages
+  const connectStream = useCallback(
+    (sessionId: string) => {
+      // Close any existing connection
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
-    };
 
-    es.onerror = () => {
-      // Reconnection is handled by EventSource automatically, but if the
-      // stream was intentionally closed we just ignore
-    };
-  }, [fetchProviderUsage]);
+      streamingContentRef.current = "";
+      setStreamingContent("");
+      setStreamingMessageId(null);
+      setActiveToolCalls([]);
+
+      const password = localStorage.getItem("ac:webPassword") || "";
+      const streamUrl = password
+        ? `${serverUrl}/api/sessions/${sessionId}/stream?token=${encodeURIComponent(password)}`
+        : `${serverUrl}/api/sessions/${sessionId}/stream`;
+      const es = new EventSource(streamUrl);
+      eventSourceRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as {
+            type:
+              | "connected"
+              | "token"
+              | "done"
+              | "error"
+              | "tool_call"
+              | "tool_result"
+              | "permission_request";
+            messageId?: string;
+            token?: string;
+            error?: string;
+            usage?: {
+              inputTokens: number;
+              outputTokens: number;
+              totalTokens: number;
+            };
+            toolCallId?: string;
+            toolName?: string;
+            arguments?: string;
+            result?: string;
+            isError?: boolean;
+            fileChange?: FileChange;
+            action?: string;
+          };
+
+          if (data.type === "token" && data.token) {
+            if (data.messageId && !streamingContentRef.current) {
+              setStreamingMessageId(data.messageId);
+            }
+            streamingContentRef.current += data.token;
+            setStreamingContent(streamingContentRef.current);
+          } else if (data.type === "tool_call" && data.toolCallId) {
+            // A new tool call is starting — add it to the active list
+            setActiveToolCalls((prev) => [
+              ...prev,
+              {
+                toolCallId: data.toolCallId!,
+                toolName: data.toolName || "unknown",
+                arguments: data.arguments,
+                status: "running",
+              },
+            ]);
+            // Clear streaming content since the AI text portion for this round is done
+            // and we're now in tool execution phase
+            streamingContentRef.current = "";
+            setStreamingContent("");
+          } else if (data.type === "tool_result" && data.toolCallId) {
+            // A tool call completed — update its status and result
+            setActiveToolCalls((prev) =>
+              prev.map((tc) =>
+                tc.toolCallId === data.toolCallId
+                  ? {
+                      ...tc,
+                      result: data.result,
+                      isError: data.isError,
+                      fileChange: data.fileChange,
+                      status: data.isError ? "error" : "done",
+                    }
+                  : tc,
+              ),
+            );
+          } else if (data.type === "permission_request" && data.toolCallId) {
+            setPendingPermissions((prev) => [
+              ...prev,
+              {
+                toolCallId: data.toolCallId!,
+                toolName: data.toolName || "unknown",
+                action: data.action || data.toolName || "unknown",
+                messageId: data.messageId || "",
+              },
+            ]);
+          } else if (data.type === "done") {
+            // Accumulate usage data if present
+            if (data.usage) {
+              setSessionUsage((prev) => ({
+                totalInputTokens:
+                  prev.totalInputTokens + data.usage!.inputTokens,
+                totalOutputTokens:
+                  prev.totalOutputTokens + data.usage!.outputTokens,
+                totalTokens: prev.totalTokens + data.usage!.totalTokens,
+                requestCount: prev.requestCount + 1,
+                // Context = total tokens in conversation (input + output so far)
+                estimatedContextTokens:
+                  prev.estimatedContextTokens + data.usage!.totalTokens,
+              }));
+            } else {
+              // Even without usage data, increment request count
+              setSessionUsage((prev) => ({
+                ...prev,
+                requestCount: prev.requestCount + 1,
+              }));
+            }
+            // Stream complete — reload session to get final message from server
+            setStreamingContent("");
+            setStreamingMessageId(null);
+            streamingContentRef.current = "";
+            setActiveToolCalls([]);
+            setPendingPermissions([]);
+            // Fetch the final session state
+            fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
+              .then((payload) => setSessionDetail(payload))
+              .catch(() => undefined);
+            // Refresh workspace after AI completes (new files may have been created)
+            void loadWorkspaceRef.current();
+            // Refresh provider usage (rate limit headers may have updated)
+            fetchProviderUsage();
+            es.close();
+            eventSourceRef.current = null;
+          } else if (data.type === "error") {
+            // Error — reload session and close
+            setStreamingContent("");
+            setStreamingMessageId(null);
+            streamingContentRef.current = "";
+            setActiveToolCalls([]);
+            fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`)
+              .then((payload) => setSessionDetail(payload))
+              .catch(() => undefined);
+            // Refresh workspace after error (files may have been partially written)
+            void loadWorkspaceRef.current();
+            es.close();
+            eventSourceRef.current = null;
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+
+      es.onerror = () => {
+        // Reconnection is handled by EventSource automatically, but if the
+        // stream was intentionally closed we just ignore
+      };
+    },
+    [fetchProviderUsage],
+  );
 
   // Whether AI is currently streaming a response
   const isStreaming = !!(streamingContent || eventSourceRef.current);
@@ -768,18 +920,33 @@ export default function App() {
     const runningTool = activeToolCalls.find((tc) => tc.status === "running");
     if (runningTool) {
       let parsedArgs: Record<string, unknown> = {};
-      try { parsedArgs = JSON.parse(runningTool.arguments || "{}") as Record<string, unknown>; } catch { /* ignore */ }
+      try {
+        parsedArgs = JSON.parse(runningTool.arguments || "{}") as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        /* ignore */
+      }
       const filePath = parsedArgs.path as string | undefined;
       switch (runningTool.toolName) {
-        case "read_file": return `Reading ${filePath || "file"}...`;
-        case "write_file": return `Writing ${filePath || "file"}...`;
-        case "list_files": return `Listing ${filePath || "."}...`;
-        case "run_command": return `Running \`${(parsedArgs.command as string || "command").slice(0, 40)}\`...`;
-        default: return `Running ${runningTool.toolName}...`;
+        case "read_file":
+          return `Reading ${filePath || "file"}...`;
+        case "write_file":
+          return `Writing ${filePath || "file"}...`;
+        case "list_files":
+          return `Listing ${filePath || "."}...`;
+        case "run_command":
+          return `Running \`${((parsedArgs.command as string) || "command").slice(0, 40)}\`...`;
+        default:
+          return `Running ${runningTool.toolName}...`;
       }
     }
     // If all tool calls are done but we're still streaming (AI processing next round)
-    if (activeToolCalls.length > 0 && activeToolCalls.every((tc) => tc.status !== "running")) {
+    if (
+      activeToolCalls.length > 0 &&
+      activeToolCalls.every((tc) => tc.status !== "running")
+    ) {
       return "Thinking...";
     }
     // If streaming content is arriving, show nothing (text is visible)
@@ -793,17 +960,26 @@ export default function App() {
   async function handleRestoreCheckpoint(userMessageId: string) {
     if (!activeSessionId) return;
     try {
-      const res = await fetch(`${serverUrl}/api/sessions/${activeSessionId}/restore`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messageId: userMessageId })
-      });
-      const data = await res.json() as { ok: boolean; prompt?: string; restoredFiles?: string[] };
+      const res = await fetch(
+        `${serverUrl}/api/sessions/${activeSessionId}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId: userMessageId }),
+        },
+      );
+      const data = (await res.json()) as {
+        ok: boolean;
+        prompt?: string;
+        restoredFiles?: string[];
+      };
       if (data.ok) {
         // Put prompt text back into input
         if (data.prompt) setPrompt(data.prompt);
         // Reload session and workspace
-        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+        const payload = await fetchJson<SessionDetail>(
+          `${serverUrl}/api/sessions/${activeSessionId}`,
+        );
         setSessionDetail(payload);
         void loadWorkspace();
       }
@@ -816,8 +992,12 @@ export default function App() {
   async function handleDeletePair(userMessageId: string) {
     if (!activeSessionId) return;
     try {
-      await fetch(`${serverUrl}/api/messages/${userMessageId}`, { method: "DELETE" });
-      const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+      await fetch(`${serverUrl}/api/messages/${userMessageId}`, {
+        method: "DELETE",
+      });
+      const payload = await fetchJson<SessionDetail>(
+        `${serverUrl}/api/sessions/${activeSessionId}`,
+      );
       setSessionDetail(payload);
       void loadWorkspace();
     } catch {
@@ -840,9 +1020,13 @@ export default function App() {
     // Tell server to abort the underlying fetch
     if (activeSessionId) {
       try {
-        await fetch(`${serverUrl}/api/sessions/${activeSessionId}/abort`, { method: "POST" });
+        await fetch(`${serverUrl}/api/sessions/${activeSessionId}/abort`, {
+          method: "POST",
+        });
         // Reload session to get any partial content saved
-        const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${activeSessionId}`);
+        const payload = await fetchJson<SessionDetail>(
+          `${serverUrl}/api/sessions/${activeSessionId}`,
+        );
         setSessionDetail(payload);
       } catch {
         // Ignore — best effort
@@ -906,8 +1090,8 @@ export default function App() {
         brightBlue: "#61afef",
         brightMagenta: "#c678dd",
         brightCyan: "#56b6c2",
-        brightWhite: "#ffffff"
-      }
+        brightWhite: "#ffffff",
+      },
     });
 
     const fitAddon = new FitAddon();
@@ -935,7 +1119,9 @@ export default function App() {
       setXtermReady(true);
       console.log("[terminal] WebSocket connected");
       // Send initial size
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      ws.send(
+        JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
+      );
     };
 
     ws.onmessage = (event) => {
@@ -1011,10 +1197,18 @@ export default function App() {
   }, [dockTab]);
 
   // Persist key state to localStorage
-  useEffect(() => { localStorage.setItem("ac:sessionId", activeSessionId); }, [activeSessionId]);
-  useEffect(() => { localStorage.setItem("ac:provider", provider); }, [provider]);
-  useEffect(() => { localStorage.setItem("ac:model", model); }, [model]);
-  useEffect(() => { localStorage.setItem("ac:disabledModels", JSON.stringify(disabledModels)); }, [disabledModels]);
+  useEffect(() => {
+    localStorage.setItem("ac:sessionId", activeSessionId);
+  }, [activeSessionId]);
+  useEffect(() => {
+    localStorage.setItem("ac:provider", provider);
+  }, [provider]);
+  useEffect(() => {
+    localStorage.setItem("ac:model", model);
+  }, [model]);
+  useEffect(() => {
+    localStorage.setItem("ac:disabledModels", JSON.stringify(disabledModels));
+  }, [disabledModels]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -1039,10 +1233,18 @@ export default function App() {
       }
       // Escape — close overlays / clear error
       if (e.key === "Escape") {
-        if (showProjectSwitcher) { setShowProjectSwitcher(false); setProjectFilter(""); setProjectPathInput(""); }
-        else if (showBranchSwitcher) { setShowBranchSwitcher(false); setBranchFilter(""); setNewBranchName(""); }
-        else if (showSearchPopup) { setShowSearchPopup(false); setSearchQuery(""); }
-        else if (showSettings) setShowSettings(false);
+        if (showProjectSwitcher) {
+          setShowProjectSwitcher(false);
+          setProjectFilter("");
+          setProjectPathInput("");
+        } else if (showBranchSwitcher) {
+          setShowBranchSwitcher(false);
+          setBranchFilter("");
+          setNewBranchName("");
+        } else if (showSearchPopup) {
+          setShowSearchPopup(false);
+          setSearchQuery("");
+        } else if (showSettings) setShowSettings(false);
         else if (error) setError("");
       }
       // Cmd+, — open settings
@@ -1053,7 +1255,13 @@ export default function App() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [error, showSearchPopup, showSettings, showBranchSwitcher, showProjectSwitcher]);
+  }, [
+    error,
+    showSearchPopup,
+    showSettings,
+    showBranchSwitcher,
+    showProjectSwitcher,
+  ]);
 
   const isShareRoute = window.location.pathname.startsWith("/share/");
 
@@ -1073,7 +1281,9 @@ export default function App() {
   }, [isShareRoute]);
 
   async function loadWorkspace() {
-    const payload = await fetchJson<WorkspaceSnapshot>(`${serverUrl}/api/workspace`);
+    const payload = await fetchJson<WorkspaceSnapshot>(
+      `${serverUrl}/api/workspace`,
+    );
     setSnapshot(payload);
     setTerminalRuns(payload.recentRuns);
     setAgents(payload.agents ?? []);
@@ -1090,14 +1300,18 @@ export default function App() {
       return next;
     });
 
-    if (!activeSessionId && payload.sessions[0] && !userClearedSessionRef.current) {
+    if (
+      !activeSessionId &&
+      payload.sessions[0] &&
+      !userClearedSessionRef.current
+    ) {
       setActiveSessionId(payload.sessions[0].id);
     }
 
     if (payload.providers[0]) {
       setProvider((current) => current || payload.providers[0]!.label);
       setModel((current) => current || payload.providers[0]!.model);
-      
+
       // Collect context limits from all providers
       const allLimits: Record<string, number> = {};
       for (const p of payload.providers) {
@@ -1121,7 +1335,7 @@ export default function App() {
       await fetchJson(`${serverUrl}/api/agents/switch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId })
+        body: JSON.stringify({ agentId }),
       });
       setActiveAgentId(agentId);
     } catch (err) {
@@ -1132,28 +1346,35 @@ export default function App() {
 
   async function shareSession(sessionId: string) {
     try {
-      const payload = await fetchJson<{ id: string; url: string }>(`${serverUrl}/api/share`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId })
-      });
+      const payload = await fetchJson<{ id: string; url: string }>(
+        `${serverUrl}/api/share`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        },
+      );
       const fullUrl = `${serverUrl}${payload.url}`;
       await navigator.clipboard.writeText(fullUrl);
       setShareNotice("Share link copied to clipboard");
       await loadWorkspace();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to share session";
+      const msg =
+        err instanceof Error ? err.message : "Failed to share session";
       setError(msg);
     }
   }
 
   async function unshareSession(shareId: string) {
     try {
-      await fetchJson(`${serverUrl}/api/share/${shareId}`, { method: "DELETE" });
+      await fetchJson(`${serverUrl}/api/share/${shareId}`, {
+        method: "DELETE",
+      });
       setShareNotice("Share removed");
       await loadWorkspace();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to unshare session";
+      const msg =
+        err instanceof Error ? err.message : "Failed to unshare session";
       setError(msg);
     }
   }
@@ -1164,17 +1385,26 @@ export default function App() {
       return;
     }
 
-    const payload = await fetchJson<SessionDetail>(`${serverUrl}/api/sessions/${sessionId}`);
+    const payload = await fetchJson<SessionDetail>(
+      `${serverUrl}/api/sessions/${sessionId}`,
+    );
     setSessionDetail(payload);
     setTerminalRuns((current) => {
-      const merged = [...payload.commandRuns, ...current.filter((item) => !payload.commandRuns.some((run) => run.id === item.id))];
+      const merged = [
+        ...payload.commandRuns,
+        ...current.filter(
+          (item) => !payload.commandRuns.some((run) => run.id === item.id),
+        ),
+      ];
       return merged.slice(0, 12);
     });
   }
 
   async function loadAuthStatus() {
     try {
-      const payload = await fetchJson<AuthStatusResponse>(`${serverUrl}/api/auth/status`);
+      const payload = await fetchJson<AuthStatusResponse>(
+        `${serverUrl}/api/auth/status`,
+      );
       setAuthStatus(payload);
     } catch {
       // Silently fail — auth status is non-critical
@@ -1187,7 +1417,7 @@ export default function App() {
       await fetchJson(`${serverUrl}/api/auth/keys`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider: providerId, key })
+        body: JSON.stringify({ provider: providerId, key }),
       });
       setApiKeyInputs((current) => ({ ...current, [providerId]: "" }));
       await loadAuthStatus();
@@ -1201,7 +1431,9 @@ export default function App() {
   async function removeApiKey(providerId: string) {
     setRemovingKey(providerId);
     try {
-      await fetchJson(`${serverUrl}/api/auth/keys/${providerId}`, { method: "DELETE" });
+      await fetchJson(`${serverUrl}/api/auth/keys/${providerId}`, {
+        method: "DELETE",
+      });
       await loadAuthStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove key");
@@ -1213,13 +1445,18 @@ export default function App() {
   async function startGitHubLogin() {
     setGithubStarting(true);
     try {
-      const payload = await fetchJson<GitHubDeviceCodeResponse>(`${serverUrl}/api/auth/github/start`, {
-        method: "POST"
-      });
+      const payload = await fetchJson<GitHubDeviceCodeResponse>(
+        `${serverUrl}/api/auth/github/start`,
+        {
+          method: "POST",
+        },
+      );
       setGithubDevice(payload);
       setGithubPolling(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start GitHub login");
+      setError(
+        err instanceof Error ? err.message : "Failed to start GitHub login",
+      );
     } finally {
       setGithubStarting(false);
     }
@@ -1242,7 +1479,11 @@ export default function App() {
         await Promise.all([loadWorkspace(), loadAuthStatus()]);
       } catch (nextError) {
         if (active) {
-          setError(nextError instanceof Error ? nextError.message : "Failed to load workspace");
+          setError(
+            nextError instanceof Error
+              ? nextError.message
+              : "Failed to load workspace",
+          );
         }
       } finally {
         if (active) {
@@ -1265,7 +1506,11 @@ export default function App() {
     }
 
     void loadSession(activeSessionId).catch((nextError) => {
-      setError(nextError instanceof Error ? nextError.message : "Failed to load session");
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Failed to load session",
+      );
     });
     setPendingPermissions([]);
   }, [activeSessionId]);
@@ -1300,8 +1545,8 @@ export default function App() {
     const timeline = messageTimelineRef.current;
     if (!timeline) return;
     function handleScroll() {
-      const { scrollTop, scrollHeight, clientHeight } = timeline;
-      const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+      const el = timeline as HTMLDivElement;
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
       setShowScrollButton(!isAtBottom);
     }
     timeline.addEventListener("scroll", handleScroll);
@@ -1313,14 +1558,21 @@ export default function App() {
   const pollIntervalRef = useRef(5000);
 
   // Keep refs in sync for use inside async poll closures
-  useEffect(() => { githubDeviceRef.current = githubDevice; }, [githubDevice]);
-  useEffect(() => { githubPollingRef.current = githubPolling; }, [githubPolling]);
+  useEffect(() => {
+    githubDeviceRef.current = githubDevice;
+  }, [githubDevice]);
+  useEffect(() => {
+    githubPollingRef.current = githubPolling;
+  }, [githubPolling]);
 
   useEffect(() => {
     if (!githubPolling || !githubDevice) return;
 
     // Reset interval at the start of a new device flow
-    pollIntervalRef.current = Math.max((githubDevice.interval || 5) * 1000, 5000);
+    pollIntervalRef.current = Math.max(
+      (githubDevice.interval || 5) * 1000,
+      5000,
+    );
     let cancelled = false;
 
     async function poll() {
@@ -1329,7 +1581,7 @@ export default function App() {
 
       try {
         const result = await fetchJson<GitHubPollResponse>(
-          `${serverUrl}/api/auth/github/poll?device_code=${encodeURIComponent(device.deviceCode)}`
+          `${serverUrl}/api/auth/github/poll?device_code=${encodeURIComponent(device.deviceCode)}`,
         );
         if (cancelled) return;
 
@@ -1353,7 +1605,10 @@ export default function App() {
         }
       } catch {
         // Network error — continue polling with a longer backoff
-        pollIntervalRef.current = Math.min(pollIntervalRef.current + 2000, 60000);
+        pollIntervalRef.current = Math.min(
+          pollIntervalRef.current + 2000,
+          60000,
+        );
       }
 
       if (!cancelled) {
@@ -1383,17 +1638,27 @@ export default function App() {
     return files.find((file) => file.id === fallbackId) ?? null;
   })();
   const fileTree = useMemo(() => buildTree(files), [files]);
-  const filteredTree = useMemo(() => filterTree(fileTree, treeFilter.trim()), [fileTree, treeFilter]);
+  const filteredTree = useMemo(
+    () => filterTree(fileTree, treeFilter.trim()),
+    [fileTree, treeFilter],
+  );
   const changedFiles = useMemo(
-    () => files.filter((file) => (drafts[file.id] ?? file.content) !== file.content),
-    [drafts, files]
+    () =>
+      files.filter(
+        (file) => (drafts[file.id] ?? file.content) !== file.content,
+      ),
+    [drafts, files],
   );
   const filteredFiles = useMemo(() => {
     if (!searchQuery.trim()) {
       return files;
     }
     const query = searchQuery.toLowerCase();
-    return files.filter((file) => file.path.toLowerCase().includes(query) || file.content.toLowerCase().includes(query));
+    return files.filter(
+      (file) =>
+        file.path.toLowerCase().includes(query) ||
+        file.content.toLowerCase().includes(query),
+    );
   }, [files, searchQuery]);
   // Merge terminal runs — prefer terminalRuns (has real-time streaming data) over session commandRuns
   const previewRuns = useMemo(() => {
@@ -1405,19 +1670,24 @@ export default function App() {
         merged.push(sr);
       }
     }
-    return merged.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 12);
+    return merged
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, 12);
   }, [terminalRuns, sessionDetail?.commandRuns]);
   const activeRun = previewRuns[0] ?? null;
 
   // Auto-scroll terminal output
   useEffect(() => {
     if (terminalOutputRef.current) {
-      terminalOutputRef.current.scrollTop = terminalOutputRef.current.scrollHeight;
+      terminalOutputRef.current.scrollTop =
+        terminalOutputRef.current.scrollHeight;
     }
   }, [activeRun?.output]);
 
   function openFile(fileId: string) {
-    setOpenFileIds((current) => (current.includes(fileId) ? current : [...current, fileId]));
+    setOpenFileIds((current) =>
+      current.includes(fileId) ? current : [...current, fileId],
+    );
     setActiveFileId(fileId);
     setShowRightPanel(true);
   }
@@ -1425,7 +1695,9 @@ export default function App() {
   function closeFile(fileId: string) {
     setOpenFileIds((current) => {
       const nextOpenFileIds = current.filter((item) => item !== fileId);
-      setActiveFileId((currentActive) => (currentActive === fileId ? (nextOpenFileIds[0] ?? "") : currentActive));
+      setActiveFileId((currentActive) =>
+        currentActive === fileId ? (nextOpenFileIds[0] ?? "") : currentActive,
+      );
       return nextOpenFileIds;
     });
   }
@@ -1442,12 +1714,14 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           path: activeFile.path,
-          content: drafts[activeFile.id] ?? activeFile.content
-        })
+          content: drafts[activeFile.id] ?? activeFile.content,
+        }),
       });
       await loadWorkspace();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to save file");
+      setError(
+        nextError instanceof Error ? nextError.message : "Failed to save file",
+      );
     } finally {
       setSaving(false);
     }
@@ -1463,25 +1737,35 @@ export default function App() {
     setError("");
     try {
       if (!activeSessionId) {
-        const payload = await fetchJson<SessionDetail & { streamMessageId?: string }>(`${serverUrl}/api/sessions`, {
+        const payload = await fetchJson<
+          SessionDetail & { streamMessageId?: string }
+        >(`${serverUrl}/api/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             prompt: content,
             provider,
             model,
-            filePath: activeFile?.path
-          })
+            filePath: activeFile?.path,
+          }),
         });
         setActiveSessionId(payload.id);
         setSessionDetail(payload);
         userClearedSessionRef.current = false;
         // Reset usage tracking for new session
-        setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
+        setSessionUsage({
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalTokens: 0,
+          requestCount: 0,
+          estimatedContextTokens: 0,
+        });
         // Connect to SSE stream for real-time token delivery
         connectStream(payload.id);
       } else {
-        const payload = await fetchJson<SessionDetail & { streamMessageId?: string }>(`${serverUrl}/api/messages`, {
+        const payload = await fetchJson<
+          SessionDetail & { streamMessageId?: string }
+        >(`${serverUrl}/api/messages`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1489,8 +1773,8 @@ export default function App() {
             prompt: content,
             provider,
             model,
-            filePath: activeFile?.path
-          })
+            filePath: activeFile?.path,
+          }),
         });
         setSessionDetail(payload);
         // Connect to SSE stream for real-time token delivery
@@ -1501,7 +1785,11 @@ export default function App() {
       await loadWorkspace();
       setSidebarTab("chat");
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to send message");
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Failed to send message",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -1512,12 +1800,20 @@ export default function App() {
     setActiveSessionId("");
     setSessionDetail(null);
     setPrompt("");
-    setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
+    setSessionUsage({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+      requestCount: 0,
+      estimatedContextTokens: 0,
+    });
   }
 
   async function handleDeleteSession(sessionId: string) {
     try {
-      await fetchJson(`${serverUrl}/api/sessions/${sessionId}`, { method: "DELETE" });
+      await fetchJson(`${serverUrl}/api/sessions/${sessionId}`, {
+        method: "DELETE",
+      });
       if (activeSessionId === sessionId) {
         setActiveSessionId("");
         setSessionDetail(null);
@@ -1543,7 +1839,9 @@ export default function App() {
       }>(`${serverUrl}/api/git/branches`);
       setBranchData(data);
     } catch (err) {
-      setBranchError(err instanceof Error ? err.message : "Failed to load branches");
+      setBranchError(
+        err instanceof Error ? err.message : "Failed to load branches",
+      );
     } finally {
       setBranchLoading(false);
       requestAnimationFrame(() => branchFilterRef.current?.focus());
@@ -1574,16 +1872,21 @@ export default function App() {
     setBranchLoading(true);
     setBranchError("");
     try {
-      await fetchJson<{ branch: string; created: string }>(`${serverUrl}/api/git/branch`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: newBranchName.trim(), checkout: true }),
-      });
+      await fetchJson<{ branch: string; created: string }>(
+        `${serverUrl}/api/git/branch`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: newBranchName.trim(), checkout: true }),
+        },
+      );
       setShowBranchSwitcher(false);
       setNewBranchName("");
       await loadWorkspace();
     } catch (err) {
-      setBranchError(err instanceof Error ? err.message : "Branch creation failed");
+      setBranchError(
+        err instanceof Error ? err.message : "Branch creation failed",
+      );
     } finally {
       setBranchLoading(false);
     }
@@ -1603,7 +1906,9 @@ export default function App() {
       }>(`${serverUrl}/api/workspace/recent`);
       setRecentProjects(data.projects);
     } catch (err) {
-      setProjectError(err instanceof Error ? err.message : "Failed to load projects");
+      setProjectError(
+        err instanceof Error ? err.message : "Failed to load projects",
+      );
     } finally {
       setProjectLoading(false);
       requestAnimationFrame(() => projectFilterRef.current?.focus());
@@ -1615,11 +1920,14 @@ export default function App() {
     setProjectLoading(true);
     setProjectError("");
     try {
-      await fetchJson<{ root: string; name: string }>(`${serverUrl}/api/workspace/switch`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: projectPath }),
-      });
+      await fetchJson<{ root: string; name: string }>(
+        `${serverUrl}/api/workspace/switch`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: projectPath }),
+        },
+      );
       setShowProjectSwitcher(false);
 
       // --- Close any active SSE stream to the old session ---
@@ -1652,7 +1960,13 @@ export default function App() {
       setTerminalRuns([]);
 
       // Reset usage tracking for the new project
-      setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
+      setSessionUsage({
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalTokens: 0,
+        requestCount: 0,
+        estimatedContextTokens: 0,
+      });
 
       // Close autocomplete if open
       setAutocompleteType(null);
@@ -1711,7 +2025,11 @@ export default function App() {
         <div className="share-card">
           <div className="share-header">
             <strong>{sharedSession?.title ?? "Shared session"}</strong>
-            <small>{sharedSession ? new Date(sharedSession.createdAt).toLocaleString() : ""}</small>
+            <small>
+              {sharedSession
+                ? new Date(sharedSession.createdAt).toLocaleString()
+                : ""}
+            </small>
           </div>
           {shareLoading ? (
             <div className="empty-inline">Loading shared session...</div>
@@ -1728,21 +2046,40 @@ export default function App() {
   return (
     <main className="shell">
       {/* ===== Titlebar ===== */}
-      <header className={`titlebar${isElectron ? " electron" : ""}${isMac ? " mac" : ""}`}>
+      <header
+        className={`titlebar${isElectron ? " electron" : ""}${isMac ? " mac" : ""}`}
+      >
         <div className="titlebar-side left">
           <span className="brand-lockup">{APP_NAME}</span>
-          <button className="titlebar-chip muted" type="button" title="Open project folder" onClick={openProjectSwitcher}>
+          <button
+            className="titlebar-chip muted"
+            type="button"
+            title="Open project folder"
+            onClick={openProjectSwitcher}
+          >
             <FolderGit2 size={12} />
             <span>{snapshot?.workspace.name}</span>
           </button>
-          <button className="titlebar-chip muted" type="button" title="Switch branch" onClick={openBranchSwitcher}>
+          <button
+            className="titlebar-chip muted"
+            type="button"
+            title="Switch branch"
+            onClick={openBranchSwitcher}
+          >
             <GitBranch size={12} />
             <span>{snapshot?.workspace?.branch ?? "main"}</span>
           </button>
         </div>
 
         <div className="titlebar-center">
-          <button className="command-palette" type="button" onClick={() => { setShowSearchPopup(true); requestAnimationFrame(() => searchPopupRef.current?.focus()); }}>
+          <button
+            className="command-palette"
+            type="button"
+            onClick={() => {
+              setShowSearchPopup(true);
+              requestAnimationFrame(() => searchPopupRef.current?.focus());
+            }}
+          >
             <Search size={13} />
             <span>Search files, sessions, commands</span>
             <kbd>Cmd K</kbd>
@@ -1846,7 +2183,11 @@ export default function App() {
                       <span className="pane-kicker">Threads</span>
                       <h2>Sessions</h2>
                     </div>
-                    <button className="pane-button accent" type="button" onClick={handleNewSession}>
+                    <button
+                      className="pane-button accent"
+                      type="button"
+                      onClick={handleNewSession}
+                    >
                       <Sparkles size={12} />
                       <span>New</span>
                     </button>
@@ -1864,13 +2205,19 @@ export default function App() {
                           <button
                             className="session-row-main"
                             type="button"
-                            onClick={() => { userClearedSessionRef.current = false; setActiveSessionId(session.id); }}
+                            onClick={() => {
+                              userClearedSessionRef.current = false;
+                              setActiveSessionId(session.id);
+                            }}
                           >
-                            <span className={`session-status ${session.status}`} />
+                            <span
+                              className={`session-status ${session.status}`}
+                            />
                             <span className="session-copy">
                               <strong>{session.title}</strong>
                               <small>
-                                {session.provider} · {formatTime(session.updatedAt)}
+                                {session.provider} ·{" "}
+                                {formatTime(session.updatedAt)}
                               </small>
                             </span>
                           </button>
@@ -1888,7 +2235,11 @@ export default function App() {
                           <button
                             className="session-share-btn"
                             type="button"
-                            title={session.sharedId ? "Unshare session" : "Share session"}
+                            title={
+                              session.sharedId
+                                ? "Unshare session"
+                                : "Share session"
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
                               if (session.sharedId) {
@@ -1898,7 +2249,11 @@ export default function App() {
                               }
                             }}
                           >
-                            {session.sharedId ? <LogOut size={12} /> : <ExternalLink size={12} />}
+                            {session.sharedId ? (
+                              <LogOut size={12} />
+                            ) : (
+                              <ExternalLink size={12} />
+                            )}
                           </button>
                         </div>
                       ))
@@ -1925,7 +2280,12 @@ export default function App() {
                       <div className="empty-inline">No unsaved changes</div>
                     ) : (
                       changedFiles.map((file) => (
-                        <button key={file.id} className="change-card" type="button" onClick={() => openFile(file.id)}>
+                        <button
+                          key={file.id}
+                          className="change-card"
+                          type="button"
+                          onClick={() => openFile(file.id)}
+                        >
                           <FileDiff size={13} />
                           <span>{file.path}</span>
                         </button>
@@ -1947,31 +2307,55 @@ export default function App() {
               <Panel minSize={30}>
                 <div className="session-view">
                   {/* Message timeline */}
-                  <div className="message-timeline compact-scroll" ref={messageTimelineRef}>
+                  <div
+                    className="message-timeline compact-scroll"
+                    ref={messageTimelineRef}
+                  >
                     {sessionDetail ? (
                       <>
                         {checkpointPairs.map((pair, pairIdx) => {
                           // Find the final assistant text message (non-empty content, non-tool)
-                          const assistantMessages = pair.responseMessages.filter((m) => m.role === "assistant");
-                          const toolMessages = pair.responseMessages.filter((m) => m.role === "tool");
+                          const assistantMessages =
+                            pair.responseMessages.filter(
+                              (m) => m.role === "assistant",
+                            );
+                          const toolMessages = pair.responseMessages.filter(
+                            (m) => m.role === "tool",
+                          );
 
                           // Build tool results map for all tool-call assistant messages
-                          const toolResultsMap: Record<string, { result: string; isError?: boolean }> = {};
+                          const toolResultsMap: Record<
+                            string,
+                            { result: string; isError?: boolean }
+                          > = {};
                           for (const tm of toolMessages) {
                             if (tm.toolCallId) {
-                              toolResultsMap[tm.toolCallId] = { result: tm.content, isError: tm.isError };
+                              toolResultsMap[tm.toolCallId] = {
+                                result: tm.content,
+                                isError: tm.isError,
+                              };
                             }
                           }
 
                           // Collect all tool calls across all assistant messages in this pair
-                          const allToolCalls = assistantMessages.flatMap((m) => m.toolCalls || []);
+                          const allToolCalls = assistantMessages.flatMap(
+                            (m) => m.toolCalls || [],
+                          );
                           // The final assistant message with actual content
-                          const finalAssistant = [...assistantMessages].reverse().find((m) => m.content.trim());
+                          const finalAssistant = [...assistantMessages]
+                            .reverse()
+                            .find((m) => m.content.trim());
                           // Calculate response time
-                          const responseDuration = finalAssistant ? new Date(finalAssistant.createdAt).getTime() - new Date(pair.userMessage.createdAt).getTime() : null;
+                          const responseDuration = finalAssistant
+                            ? new Date(finalAssistant.createdAt).getTime() -
+                              new Date(pair.userMessage.createdAt).getTime()
+                            : null;
 
                           return (
-                            <div key={pair.userMessage.id} className="checkpoint-pair">
+                            <div
+                              key={pair.userMessage.id}
+                              className="checkpoint-pair"
+                            >
                               {/* User message */}
                               <article className="message-turn user">
                                 <div className="message-content">
@@ -1980,14 +2364,22 @@ export default function App() {
                                 <div className="message-meta message-meta-footer">
                                   <div className="message-meta-row">
                                     <span className="message-mode">{mode}</span>
-                                    <span className="message-time">{formatTime(pair.userMessage.createdAt)}</span>
-                                    <span className="message-info">{prettifyModelId(sessionDetail.model)}</span>
-                                      <div className="message-actions-inline">
+                                    <span className="message-time">
+                                      {formatTime(pair.userMessage.createdAt)}
+                                    </span>
+                                    <span className="message-info">
+                                      {prettifyModelId(sessionDetail.model)}
+                                    </span>
+                                    <div className="message-actions-inline">
                                       <button
                                         className="message-action-btn"
                                         type="button"
                                         title="Restore checkpoint — revert file changes and edit prompt"
-                                        onClick={() => void handleRestoreCheckpoint(pair.userMessage.id)}
+                                        onClick={() =>
+                                          void handleRestoreCheckpoint(
+                                            pair.userMessage.id,
+                                          )
+                                        }
                                       >
                                         <RotateCcw size={12} />
                                       </button>
@@ -1996,7 +2388,9 @@ export default function App() {
                                         type="button"
                                         title="Copy message"
                                         onClick={() => {
-                                          void navigator.clipboard.writeText(pair.userMessage.content);
+                                          void navigator.clipboard.writeText(
+                                            pair.userMessage.content,
+                                          );
                                         }}
                                       >
                                         <Copy size={12} />
@@ -2011,37 +2405,68 @@ export default function App() {
                                 <div className="tool-calls-container">
                                   {allToolCalls.map((tc) => {
                                     const tr = toolResultsMap[tc.id];
-                                    let parsedArgs: Record<string, unknown> = {};
-                                    try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
-                                    const filePath = parsedArgs.path as string | undefined;
-                                    const toolLabel = tc.name === "run_command" ? `$ ${(parsedArgs.command as string) || tc.name}`
-                                      : tc.name === "read_file" ? `Read ${filePath || ""}`
-                                      : tc.name === "write_file" ? `Write ${filePath || ""}`
-                                      : tc.name === "list_files" ? `List ${filePath || "."}`
-                                      : tc.name;
+                                    let parsedArgs: Record<string, unknown> =
+                                      {};
+                                    try {
+                                      parsedArgs = JSON.parse(
+                                        tc.arguments,
+                                      ) as Record<string, unknown>;
+                                    } catch {
+                                      /* ignore */
+                                    }
+                                    const filePath = parsedArgs.path as
+                                      | string
+                                      | undefined;
+                                    const toolLabel =
+                                      tc.name === "run_command"
+                                        ? `$ ${(parsedArgs.command as string) || tc.name}`
+                                        : tc.name === "read_file"
+                                          ? `Read ${filePath || ""}`
+                                          : tc.name === "write_file"
+                                            ? `Write ${filePath || ""}`
+                                            : tc.name === "list_files"
+                                              ? `List ${filePath || "."}`
+                                              : tc.name;
 
                                     // Find file change stats for this tool call (write_file only)
-                                    const fc = pair.fileChanges.find((f) => f.toolCallId === tc.id);
+                                    const fc = pair.fileChanges.find(
+                                      (f) => f.toolCallId === tc.id,
+                                    );
 
                                     return (
-                                      <details key={tc.id} className={`tool-call-block ${tr?.isError ? "error" : "done"}`}>
+                                      <details
+                                        key={tc.id}
+                                        className={`tool-call-block ${tr?.isError ? "error" : "done"}`}
+                                      >
                                         <summary className="tool-call-header">
                                           <Wrench size={13} />
-                                          <span className="tool-call-name">{toolLabel}</span>
+                                          <span className="tool-call-name">
+                                            {toolLabel}
+                                          </span>
                                           {fc && (
                                             <span className="file-change-stats">
-                                              <span className="lines-added">+{fc.linesAdded}</span>
-                                              <span className="lines-deleted">-{fc.linesDeleted}</span>
+                                              <span className="lines-added">
+                                                +{fc.linesAdded}
+                                              </span>
+                                              <span className="lines-deleted">
+                                                -{fc.linesDeleted}
+                                              </span>
                                             </span>
                                           )}
                                           {tr?.isError ? (
-                                            <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
+                                            <span className="tool-call-status error">
+                                              <CircleAlert size={11} /> error
+                                            </span>
                                           ) : (
-                                            <span className="tool-call-status done"><Check size={11} /> done</span>
+                                            <span className="tool-call-status done">
+                                              <Check size={11} /> done
+                                            </span>
                                           )}
                                         </summary>
                                         {tr && (
-                                          <pre className="tool-call-output">{tr.result}</pre>
+                                          <pre className="tool-call-output">
+                                            {tr.result}
+                                          </pre>
                                         )}
                                       </details>
                                     );
@@ -2063,19 +2488,32 @@ export default function App() {
                                               <button
                                                 className="md-code-copy"
                                                 onClick={(e) => {
-                                                  const code = (e.currentTarget.parentElement?.querySelector("code") as HTMLElement | null)?.innerText ?? "";
-                                                  navigator.clipboard.writeText(code);
+                                                  const code =
+                                                    (
+                                                      e.currentTarget.parentElement?.querySelector(
+                                                        "code",
+                                                      ) as HTMLElement | null
+                                                    )?.innerText ?? "";
+                                                  navigator.clipboard.writeText(
+                                                    code,
+                                                  );
                                                   const btn = e.currentTarget;
                                                   btn.textContent = "Copied!";
-                                                  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+                                                  setTimeout(() => {
+                                                    btn.textContent = "Copy";
+                                                  }, 1500);
                                                 }}
-                                              >Copy</button>
+                                              >
+                                                Copy
+                                              </button>
                                               <pre {...props}>{children}</pre>
                                             </div>
                                           );
                                         },
                                       }}
-                                    >{finalAssistant.content}</ReactMarkdown>
+                                    >
+                                      {finalAssistant.content}
+                                    </ReactMarkdown>
                                   </div>
                                   <div className="message-meta message-meta-footer">
                                     <button
@@ -2083,15 +2521,25 @@ export default function App() {
                                       type="button"
                                       title="Copy message"
                                       onClick={() => {
-                                        void navigator.clipboard.writeText(finalAssistant.content);
+                                        void navigator.clipboard.writeText(
+                                          finalAssistant.content,
+                                        );
                                       }}
                                     >
                                       <Copy size={12} />
                                     </button>
                                     <span className="message-mode">{mode}</span>
-                                    <span className="message-time">{formatTime(finalAssistant.createdAt)}</span>
-                                    <span className="message-info">{prettifyModelId(sessionDetail.model)}</span>
-                                    {responseDuration && <span className="message-duration">{formatDuration(responseDuration)}</span>}
+                                    <span className="message-time">
+                                      {formatTime(finalAssistant.createdAt)}
+                                    </span>
+                                    <span className="message-info">
+                                      {prettifyModelId(sessionDetail.model)}
+                                    </span>
+                                    {responseDuration && (
+                                      <span className="message-duration">
+                                        {formatDuration(responseDuration)}
+                                      </span>
+                                    )}
                                   </div>
                                 </article>
                               )}
@@ -2117,36 +2565,74 @@ export default function App() {
                           <div className="tool-calls-container streaming">
                             {activeToolCalls.map((tc) => {
                               let parsedArgs: Record<string, unknown> = {};
-                              try { parsedArgs = JSON.parse(tc.arguments || "{}") as Record<string, unknown>; } catch { /* ignore */ }
-                              const filePath = parsedArgs.path as string | undefined;
-                              const toolLabel = tc.toolName === "run_command" ? `$ ${(parsedArgs.command as string) || tc.toolName}`
-                                : tc.toolName === "read_file" ? `Read ${filePath || ""}`
-                                : tc.toolName === "write_file" ? `Write ${filePath || ""}`
-                                : tc.toolName === "list_files" ? `List ${filePath || "."}`
-                                : tc.toolName;
+                              try {
+                                parsedArgs = JSON.parse(
+                                  tc.arguments || "{}",
+                                ) as Record<string, unknown>;
+                              } catch {
+                                /* ignore */
+                              }
+                              const filePath = parsedArgs.path as
+                                | string
+                                | undefined;
+                              const toolLabel =
+                                tc.toolName === "run_command"
+                                  ? `$ ${(parsedArgs.command as string) || tc.toolName}`
+                                  : tc.toolName === "read_file"
+                                    ? `Read ${filePath || ""}`
+                                    : tc.toolName === "write_file"
+                                      ? `Write ${filePath || ""}`
+                                      : tc.toolName === "list_files"
+                                        ? `List ${filePath || "."}`
+                                        : tc.toolName;
                               return (
-                                <details key={tc.toolCallId} className={`tool-call-block ${tc.status}`} open={tc.status === "running"}>
+                                <details
+                                  key={tc.toolCallId}
+                                  className={`tool-call-block ${tc.status}`}
+                                  open={tc.status === "running"}
+                                >
                                   <summary className="tool-call-header">
-                                    {tc.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
-                                    <span className="tool-call-name">{toolLabel}</span>
+                                    {tc.status === "running" ? (
+                                      <LoaderCircle
+                                        size={13}
+                                        className="spin"
+                                      />
+                                    ) : (
+                                      <Wrench size={13} />
+                                    )}
+                                    <span className="tool-call-name">
+                                      {toolLabel}
+                                    </span>
                                     {tc.fileChange && (
                                       <span className="file-change-stats">
-                                        <span className="lines-added">+{tc.fileChange.linesAdded}</span>
-                                        <span className="lines-deleted">-{tc.fileChange.linesDeleted}</span>
+                                        <span className="lines-added">
+                                          +{tc.fileChange.linesAdded}
+                                        </span>
+                                        <span className="lines-deleted">
+                                          -{tc.fileChange.linesDeleted}
+                                        </span>
                                       </span>
                                     )}
                                     {tc.status === "running" && (
-                                      <span className="tool-call-status running">running</span>
+                                      <span className="tool-call-status running">
+                                        running
+                                      </span>
                                     )}
                                     {tc.status === "done" && (
-                                      <span className="tool-call-status done"><Check size={11} /> done</span>
+                                      <span className="tool-call-status done">
+                                        <Check size={11} /> done
+                                      </span>
                                     )}
                                     {tc.status === "error" && (
-                                      <span className="tool-call-status error"><CircleAlert size={11} /> error</span>
+                                      <span className="tool-call-status error">
+                                        <CircleAlert size={11} /> error
+                                      </span>
                                     )}
                                   </summary>
                                   {tc.result && (
-                                    <pre className="tool-call-output">{tc.result}</pre>
+                                    <pre className="tool-call-output">
+                                      {tc.result}
+                                    </pre>
                                   )}
                                 </details>
                               );
@@ -2159,7 +2645,9 @@ export default function App() {
                           <article className="message-turn assistant streaming">
                             <div className="message-meta">
                               <span>assistant</span>
-                              <span className="streaming-indicator">streaming</span>
+                              <span className="streaming-indicator">
+                                streaming
+                              </span>
                             </div>
                             <div className="message-content">
                               <ReactMarkdown
@@ -2172,19 +2660,30 @@ export default function App() {
                                         <button
                                           className="md-code-copy"
                                           onClick={(e) => {
-                                            const code = (e.currentTarget.parentElement?.querySelector("code") as HTMLElement | null)?.innerText ?? "";
+                                            const code =
+                                              (
+                                                e.currentTarget.parentElement?.querySelector(
+                                                  "code",
+                                                ) as HTMLElement | null
+                                              )?.innerText ?? "";
                                             navigator.clipboard.writeText(code);
                                             const btn = e.currentTarget;
                                             btn.textContent = "Copied!";
-                                            setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+                                            setTimeout(() => {
+                                              btn.textContent = "Copy";
+                                            }, 1500);
                                           }}
-                                        >Copy</button>
+                                        >
+                                          Copy
+                                        </button>
                                         <pre {...props}>{children}</pre>
                                       </div>
                                     );
                                   },
                                 }}
-                              >{streamingContent}</ReactMarkdown>
+                              >
+                                {streamingContent}
+                              </ReactMarkdown>
                             </div>
                           </article>
                         )}
@@ -2195,31 +2694,53 @@ export default function App() {
                         <div className="welcome-hero">
                           <Sparkles size={28} className="welcome-icon" />
                           <h2 className="welcome-title">Alpha Code</h2>
-                          <p className="welcome-subtitle">AI-powered code editor. Ask questions, run commands, and edit files — all in one place.</p>
+                          <p className="welcome-subtitle">
+                            AI-powered code editor. Ask questions, run commands,
+                            and edit files — all in one place.
+                          </p>
                         </div>
                         <div className="welcome-actions">
-                          <button className="welcome-card" type="button" onClick={handleNewSession}>
+                          <button
+                            className="welcome-card"
+                            type="button"
+                            onClick={handleNewSession}
+                          >
                             <Plus size={16} />
                             <div>
                               <strong>New Session</strong>
                               <span>Start a conversation with AI</span>
                             </div>
                           </button>
-                          <button className="welcome-card" type="button" onClick={() => { setShowTerminal(true); setDockTab("terminal"); }}>
+                          <button
+                            className="welcome-card"
+                            type="button"
+                            onClick={() => {
+                              setShowTerminal(true);
+                              setDockTab("terminal");
+                            }}
+                          >
                             <Terminal size={16} />
                             <div>
                               <strong>Open Terminal</strong>
                               <span>Run commands in your project</span>
                             </div>
                           </button>
-                          <button className="welcome-card" type="button" onClick={() => setShowRightPanel(true)}>
+                          <button
+                            className="welcome-card"
+                            type="button"
+                            onClick={() => setShowRightPanel(true)}
+                          >
                             <Files size={16} />
                             <div>
                               <strong>Browse Files</strong>
                               <span>Explore your project tree</span>
                             </div>
                           </button>
-                          <button className="welcome-card" type="button" onClick={() => setShowSettings(true)}>
+                          <button
+                            className="welcome-card"
+                            type="button"
+                            onClick={() => setShowSettings(true)}
+                          >
                             <Settings2 size={16} />
                             <div>
                               <strong>Settings</strong>
@@ -2228,10 +2749,18 @@ export default function App() {
                           </button>
                         </div>
                         <div className="welcome-shortcuts">
-                          <span><kbd>{"\u2318"}K</kbd> Search</span>
-                          <span><kbd>{"\u2318"}N</kbd> New Session</span>
-                          <span><kbd>{"\u2318"}S</kbd> Save File</span>
-                          <span><kbd>{"\u21A9"}</kbd> Send Message</span>
+                          <span>
+                            <kbd>{"\u2318"}K</kbd> Search
+                          </span>
+                          <span>
+                            <kbd>{"\u2318"}N</kbd> New Session
+                          </span>
+                          <span>
+                            <kbd>{"\u2318"}S</kbd> Save File
+                          </span>
+                          <span>
+                            <kbd>{"\u21A9"}</kbd> Send Message
+                          </span>
                         </div>
                       </div>
                     )}
@@ -2245,7 +2774,11 @@ export default function App() {
                       <button
                         className="scroll-to-bottom-btn"
                         type="button"
-                        onClick={() => messageEndRef.current?.scrollIntoView({ behavior: "smooth" })}
+                        onClick={() =>
+                          messageEndRef.current?.scrollIntoView({
+                            behavior: "smooth",
+                          })
+                        }
                         title="Scroll to bottom"
                       >
                         <ChevronDown size={16} />
@@ -2253,62 +2786,136 @@ export default function App() {
                     )}
                     <div className="dock-surface">
                       <div className="dock-composer">
-                        <div className="dock-textarea-wrap" style={{ position: "relative" }}>
+                        <div
+                          className="dock-textarea-wrap"
+                          style={{ position: "relative" }}
+                        >
                           {/* Autocomplete popup */}
-                          {autocompleteType && (() => {
-                            const atItems = [
-                              { label: "@file", insert: "@file", desc: "Reference a file", icon: <FileCode2 size={13} /> },
-                              { label: "@terminal", insert: "@terminal", desc: "Terminal context", icon: <TerminalSquare size={13} /> },
-                              { label: "@workspace", insert: "@workspace", desc: "Workspace context", icon: <Files size={13} /> },
-                              { label: "@selection", insert: "@selection", desc: "Selected code", icon: <Braces size={13} /> },
-                            ];
-                            const slashItems = [
-                              { label: "/plan", insert: "plan", desc: "Create an implementation plan", icon: <Sparkles size={13} /> },
-                              { label: "/review", insert: "review", desc: "Review code changes", icon: <Search size={13} /> },
-                              { label: "/fix", insert: "fix", desc: "Fix errors and bugs", icon: <Settings2 size={13} /> },
-                              { label: "/explain", insert: "explain", desc: "Explain code", icon: <MessageSquare size={13} /> },
-                              { label: "/test", insert: "test", desc: "Write tests", icon: <FileCode2 size={13} /> },
-                              { label: "/refactor", insert: "refactor", desc: "Refactor code", icon: <Braces size={13} /> },
-                            ];
-                            const items = autocompleteType === "@" ? atItems : slashItems;
-                            const filtered = autocompleteQuery
-                              ? items.filter((i) => i.label.toLowerCase().includes(autocompleteQuery.toLowerCase()))
-                              : items;
-                            if (filtered.length === 0) return null;
-                            return (
-                              <div className="autocomplete-popup">
-                                {filtered.map((item, idx) => (
-                                  <button
-                                    key={item.label}
-                                    type="button"
-                                    className={`autocomplete-item${idx === autocompleteIndex ? " selected" : ""}`}
-                                    onMouseDown={(e) => {
-                                      e.preventDefault();
-                                      // Insert the command into prompt
-                                      const before = prompt.slice(0, prompt.lastIndexOf(autocompleteType === "@" ? "@" : "/"));
-                                      setPrompt(before + item.insert + " ");
-                                      setAutocompleteType(null);
-                                      setAutocompleteQuery("");
-                                      setAutocompleteIndex(0);
-                                    }}
-                                  >
-                                    {item.icon}
-                                    <span className="autocomplete-item-label">
-                                      {highlightLabel(item.label, autocompleteQuery)}
-                                    </span>
-                                    <span className="autocomplete-item-desc">{item.desc}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            );
-                          })()}
+                          {autocompleteType &&
+                            (() => {
+                              const atItems = [
+                                {
+                                  label: "@file",
+                                  insert: "@file",
+                                  desc: "Reference a file",
+                                  icon: <FileCode2 size={13} />,
+                                },
+                                {
+                                  label: "@terminal",
+                                  insert: "@terminal",
+                                  desc: "Terminal context",
+                                  icon: <TerminalSquare size={13} />,
+                                },
+                                {
+                                  label: "@workspace",
+                                  insert: "@workspace",
+                                  desc: "Workspace context",
+                                  icon: <Files size={13} />,
+                                },
+                                {
+                                  label: "@selection",
+                                  insert: "@selection",
+                                  desc: "Selected code",
+                                  icon: <Braces size={13} />,
+                                },
+                              ];
+                              const slashItems = [
+                                {
+                                  label: "/plan",
+                                  insert: "plan",
+                                  desc: "Create an implementation plan",
+                                  icon: <Sparkles size={13} />,
+                                },
+                                {
+                                  label: "/review",
+                                  insert: "review",
+                                  desc: "Review code changes",
+                                  icon: <Search size={13} />,
+                                },
+                                {
+                                  label: "/fix",
+                                  insert: "fix",
+                                  desc: "Fix errors and bugs",
+                                  icon: <Settings2 size={13} />,
+                                },
+                                {
+                                  label: "/explain",
+                                  insert: "explain",
+                                  desc: "Explain code",
+                                  icon: <MessageSquare size={13} />,
+                                },
+                                {
+                                  label: "/test",
+                                  insert: "test",
+                                  desc: "Write tests",
+                                  icon: <FileCode2 size={13} />,
+                                },
+                                {
+                                  label: "/refactor",
+                                  insert: "refactor",
+                                  desc: "Refactor code",
+                                  icon: <Braces size={13} />,
+                                },
+                              ];
+                              const items =
+                                autocompleteType === "@" ? atItems : slashItems;
+                              const filtered = autocompleteQuery
+                                ? items.filter((i) =>
+                                    i.label
+                                      .toLowerCase()
+                                      .includes(
+                                        autocompleteQuery.toLowerCase(),
+                                      ),
+                                  )
+                                : items;
+                              if (filtered.length === 0) return null;
+                              return (
+                                <div className="autocomplete-popup">
+                                  {filtered.map((item, idx) => (
+                                    <button
+                                      key={item.label}
+                                      type="button"
+                                      className={`autocomplete-item${idx === autocompleteIndex ? " selected" : ""}`}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        // Insert the command into prompt
+                                        const before = prompt.slice(
+                                          0,
+                                          prompt.lastIndexOf(
+                                            autocompleteType === "@"
+                                              ? "@"
+                                              : "/",
+                                          ),
+                                        );
+                                        setPrompt(before + item.insert + " ");
+                                        setAutocompleteType(null);
+                                        setAutocompleteQuery("");
+                                        setAutocompleteIndex(0);
+                                      }}
+                                    >
+                                      {item.icon}
+                                      <span className="autocomplete-item-label">
+                                        {highlightLabel(
+                                          item.label,
+                                          autocompleteQuery,
+                                        )}
+                                      </span>
+                                      <span className="autocomplete-item-desc">
+                                        {item.desc}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           <textarea
                             value={prompt}
                             onChange={(event) => {
                               const val = event.target.value;
                               setPrompt(val);
                               // Detect @ or / trigger
-                              const cursor = event.target.selectionStart ?? val.length;
+                              const cursor =
+                                event.target.selectionStart ?? val.length;
                               const textBefore = val.slice(0, cursor);
                               const atMatch = textBefore.match(/@(\w*)$/);
                               const slashMatch = textBefore.match(/\/(\w*)$/);
@@ -2316,7 +2923,16 @@ export default function App() {
                                 setAutocompleteType("@");
                                 setAutocompleteQuery(atMatch[1] ?? "");
                                 setAutocompleteIndex(0);
-                              } else if (slashMatch && (textBefore === slashMatch[0] || textBefore[textBefore.length - slashMatch[0].length - 1] === " " || textBefore[textBefore.length - slashMatch[0].length - 1] === "\n")) {
+                              } else if (
+                                slashMatch &&
+                                (textBefore === slashMatch[0] ||
+                                  textBefore[
+                                    textBefore.length - slashMatch[0].length - 1
+                                  ] === " " ||
+                                  textBefore[
+                                    textBefore.length - slashMatch[0].length - 1
+                                  ] === "\n")
+                              ) {
                                 setAutocompleteType("/");
                                 setAutocompleteQuery(slashMatch[1] ?? "");
                                 setAutocompleteIndex(0);
@@ -2329,7 +2945,11 @@ export default function App() {
                             rows={3}
                             onKeyDown={(event) => {
                               if (autocompleteType) {
-                                if (autocompleteType === "/" && (event.key === " " || (event.key === "Enter" && !event.shiftKey))) {
+                                if (
+                                  autocompleteType === "/" &&
+                                  (event.key === " " ||
+                                    (event.key === "Enter" && !event.shiftKey))
+                                ) {
                                   const slashItems = [
                                     { label: "/plan", insert: "plan" },
                                     { label: "/review", insert: "review" },
@@ -2338,10 +2958,17 @@ export default function App() {
                                     { label: "/test", insert: "test" },
                                     { label: "/refactor", insert: "refactor" },
                                   ];
-                                  const exact = slashItems.find((i) => i.label.slice(1).toLowerCase() === autocompleteQuery.toLowerCase());
+                                  const exact = slashItems.find(
+                                    (i) =>
+                                      i.label.slice(1).toLowerCase() ===
+                                      autocompleteQuery.toLowerCase(),
+                                  );
                                   if (exact) {
                                     event.preventDefault();
-                                    const before = prompt.slice(0, prompt.lastIndexOf("/"));
+                                    const before = prompt.slice(
+                                      0,
+                                      prompt.lastIndexOf("/"),
+                                    );
                                     setPrompt(before + exact.insert + " ");
                                     setAutocompleteType(null);
                                     setAutocompleteQuery("");
@@ -2354,15 +2981,25 @@ export default function App() {
                                   setAutocompleteType(null);
                                   return;
                                 }
-                                if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+                                if (
+                                  event.key === "Tab" ||
+                                  (event.key === "Enter" && !event.shiftKey)
+                                ) {
                                   // Accept autocomplete if visible
                                   event.preventDefault();
                                   // Simulate clicking the selected item
-                                  const popup = document.querySelector(".autocomplete-item.selected") as HTMLButtonElement | null;
+                                  const popup = document.querySelector(
+                                    ".autocomplete-item.selected",
+                                  ) as HTMLButtonElement | null;
                                   if (popup) {
-                                    popup.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                                    popup.dispatchEvent(
+                                      new MouseEvent("mousedown", {
+                                        bubbles: true,
+                                      }),
+                                    );
                                   } else {
-                                    if (event.key === "Enter") void handleSubmitPrompt();
+                                    if (event.key === "Enter")
+                                      void handleSubmitPrompt();
                                   }
                                   return;
                                 }
@@ -2373,7 +3010,9 @@ export default function App() {
                                 }
                                 if (event.key === "ArrowUp") {
                                   event.preventDefault();
-                                  setAutocompleteIndex((i) => Math.max(0, i - 1));
+                                  setAutocompleteIndex((i) =>
+                                    Math.max(0, i - 1),
+                                  );
                                   return;
                                 }
                               }
@@ -2386,13 +3025,25 @@ export default function App() {
                         </div>
                         <div className="dock-footer">
                           {isStreaming ? (
-                            <button className="titlebar-action danger dock-send-btn" type="button" onClick={() => void handleStopStreaming()}>
+                            <button
+                              className="titlebar-action danger dock-send-btn"
+                              type="button"
+                              onClick={() => void handleStopStreaming()}
+                            >
                               <Square size={13} />
                               <span>Stop</span>
                             </button>
                           ) : (
-                            <button className="titlebar-action primary dock-send-btn" type="button" onClick={() => void handleSubmitPrompt()}>
-                              {submitting ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
+                            <button
+                              className="titlebar-action primary dock-send-btn"
+                              type="button"
+                              onClick={() => void handleSubmitPrompt()}
+                            >
+                              {submitting ? (
+                                <LoaderCircle className="spin" size={16} />
+                              ) : (
+                                <Play size={16} />
+                              )}
                             </button>
                           )}
                         </div>
@@ -2410,9 +3061,13 @@ export default function App() {
                               setMode(next);
                               localStorage.setItem("ac:mode", next);
                               // Auto-select first model for new mode
-                              const p = snapshot?.providers.find((p) => p.label === provider);
+                              const p = snapshot?.providers.find(
+                                (p) => p.label === provider,
+                              );
                               if (p) {
-                                const enabled = (p.models ?? []).filter((m) => !disabledModels[m]);
+                                const enabled = (p.models ?? []).filter(
+                                  (m) => !disabledModels[m],
+                                );
                                 const first = enabled[0] || "";
                                 if (first) {
                                   setModel(first);
@@ -2432,9 +3087,16 @@ export default function App() {
                           <button
                             className="dock-dropdown-trigger"
                             type="button"
-                            onClick={() => { setShowModelDropdown(!showModelDropdown); setModelSearchQuery(""); }}
+                            onClick={() => {
+                              setShowModelDropdown(!showModelDropdown);
+                              setModelSearchQuery("");
+                            }}
                           >
-                            <span>{provider && model ? `${provider}: ${prettifyModelId(model)}` : "Select model"}</span>
+                            <span>
+                              {provider && model
+                                ? `${provider}: ${prettifyModelId(model)}`
+                                : "Select model"}
+                            </span>
                             <ChevronDown size={12} />
                           </button>
                           {showModelDropdown && (
@@ -2445,64 +3107,112 @@ export default function App() {
                                   type="text"
                                   placeholder="Search models..."
                                   value={modelSearchQuery}
-                                  onChange={(e) => setModelSearchQuery(e.target.value)}
+                                  onChange={(e) =>
+                                    setModelSearchQuery(e.target.value)
+                                  }
                                   autoFocus
                                 />
                               </div>
                               <div className="dock-dropdown-items">
                                 {(() => {
                                   // Group models by provider
-                                  const connectedProviders = (snapshot?.providers ?? []).filter((p) => p.status === "connected");
-                                  const allModelsWithProvider = connectedProviders.flatMap((p) => 
-                                    (p.models ?? [])
-                                      .filter((m) => !disabledModels[m])
-                                      .map((m) => ({ model: m, provider: p.label, providerId: p.id }))
-                                  );
+                                  const connectedProviders = (
+                                    snapshot?.providers ?? []
+                                  ).filter((p) => p.status === "connected");
+                                  const allModelsWithProvider =
+                                    connectedProviders.flatMap((p) =>
+                                      (p.models ?? [])
+                                        .filter((m) => !disabledModels[m])
+                                        .map((m) => ({
+                                          model: m,
+                                          provider: p.label,
+                                          providerId: p.id,
+                                        })),
+                                    );
                                   const filtered = modelSearchQuery
-                                    ? allModelsWithProvider.filter((item) => 
-                                        item.model.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
-                                        item.provider.toLowerCase().includes(modelSearchQuery.toLowerCase())
+                                    ? allModelsWithProvider.filter(
+                                        (item) =>
+                                          item.model
+                                            .toLowerCase()
+                                            .includes(
+                                              modelSearchQuery.toLowerCase(),
+                                            ) ||
+                                          item.provider
+                                            .toLowerCase()
+                                            .includes(
+                                              modelSearchQuery.toLowerCase(),
+                                            ),
                                       )
                                     : allModelsWithProvider;
-                                  
+
                                   if (filtered.length === 0) {
-                                    return <div className="dock-dropdown-empty">No models found</div>;
+                                    return (
+                                      <div className="dock-dropdown-empty">
+                                        No models found
+                                      </div>
+                                    );
                                   }
-                                  
+
                                   // Group by provider for display
-                                  const groupedByProvider: Record<string, typeof filtered> = {};
+                                  const groupedByProvider: Record<
+                                    string,
+                                    typeof filtered
+                                  > = {};
                                   filtered.forEach((item) => {
                                     if (!groupedByProvider[item.provider]) {
                                       groupedByProvider[item.provider] = [];
                                     }
                                     groupedByProvider[item.provider].push(item);
                                   });
-                                  
-                                  return Object.entries(groupedByProvider).map(([providerName, items]) => (
-                                    <div key={providerName} className="dock-dropdown-group">
-                                      <div className="dock-dropdown-group-header">{providerName}</div>
-                                      {items.map((item) => {
-                                        const contextLabel = getModelContextLabel(item.model, modelContextLimits);
-                                        return (
-                                          <button
-                                            key={item.model}
-                                            className={`dock-dropdown-item${model === item.model && provider === item.provider ? " active" : ""}`}
-                                            type="button"
-                                            onClick={() => {
-                                              setModel(item.model);
-                                              setProvider(item.provider);
-                                              localStorage.setItem("ac:model", item.model);
-                                              localStorage.setItem("ac:provider", item.provider);
-                                              setShowModelDropdown(false);
-                                            }}
-                                          >
-                                            <span>{prettifyModelId(item.model)}</span>
-                                            {contextLabel && <span className="dock-dropdown-context-badge">{contextLabel}</span>}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  ));
+
+                                  return Object.entries(groupedByProvider).map(
+                                    ([providerName, items]) => (
+                                      <div
+                                        key={providerName}
+                                        className="dock-dropdown-group"
+                                      >
+                                        <div className="dock-dropdown-group-header">
+                                          {providerName}
+                                        </div>
+                                        {items.map((item) => {
+                                          const contextLabel =
+                                            getModelContextLabel(
+                                              item.model,
+                                              modelContextLimits,
+                                            );
+                                          return (
+                                            <button
+                                              key={item.model}
+                                              className={`dock-dropdown-item${model === item.model && provider === item.provider ? " active" : ""}`}
+                                              type="button"
+                                              onClick={() => {
+                                                setModel(item.model);
+                                                setProvider(item.provider);
+                                                localStorage.setItem(
+                                                  "ac:model",
+                                                  item.model,
+                                                );
+                                                localStorage.setItem(
+                                                  "ac:provider",
+                                                  item.provider,
+                                                );
+                                                setShowModelDropdown(false);
+                                              }}
+                                            >
+                                              <span>
+                                                {prettifyModelId(item.model)}
+                                              </span>
+                                              {contextLabel && (
+                                                <span className="dock-dropdown-context-badge">
+                                                  {contextLabel}
+                                                </span>
+                                              )}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    ),
+                                  );
                                 })()}
                               </div>
                             </div>
@@ -2511,57 +3221,122 @@ export default function App() {
                       </div>
                       {(() => {
                         // Find provider ID from label
-                        const currentProviderId = snapshot?.providers.find((p) => p.label === provider)?.id ?? "";
-                        const usage = providerUsage.find((u) => u.providerId === currentProviderId);
-                        const hasUsage = usage && usage.usageLabel !== "No usage yet" && usage.usageLabel !== "No API key" && usage.usageLabel !== "Error fetching";
+                        const currentProviderId =
+                          snapshot?.providers.find((p) => p.label === provider)
+                            ?.id ?? "";
+                        const usage = providerUsage.find(
+                          (u) => u.providerId === currentProviderId,
+                        );
+                        const hasUsage =
+                          usage &&
+                          usage.usageLabel !== "No usage yet" &&
+                          usage.usageLabel !== "No API key" &&
+                          usage.usageLabel !== "Error fetching";
                         const barPercent = usage?.usagePercent ?? 0;
-                        const barColor = barPercent > 80 ? "var(--color-error)" : barPercent > 50 ? "#e8a832" : "var(--color-success)";
-                        
+                        const barColor =
+                          barPercent > 80
+                            ? "var(--color-error)"
+                            : barPercent > 50
+                              ? "#e8a832"
+                              : "var(--color-success)";
+
                         // Context window tracking - use server-provided limits first
-                        const modelMaxContext = getModelContextLimit(model, modelContextLimits);
+                        const modelMaxContext = getModelContextLimit(
+                          model,
+                          modelContextLimits,
+                        );
                         const contextUsed = sessionUsage.estimatedContextTokens;
-                        const contextPercent = modelMaxContext > 0 ? Math.min((contextUsed / modelMaxContext) * 100, 100) : 0;
-                        const contextColor = contextPercent > 85 ? "var(--color-error)" : contextPercent > 60 ? "#e8a832" : "var(--color-success)";
-                        const contextRemaining = Math.max(0, modelMaxContext - contextUsed);
+                        const contextPercent =
+                          modelMaxContext > 0
+                            ? Math.min(
+                                (contextUsed / modelMaxContext) * 100,
+                                100,
+                              )
+                            : 0;
+                        const contextColor =
+                          contextPercent > 85
+                            ? "var(--color-error)"
+                            : contextPercent > 60
+                              ? "#e8a832"
+                              : "var(--color-success)";
+                        const contextRemaining = Math.max(
+                          0,
+                          modelMaxContext - contextUsed,
+                        );
 
                         return (
                           <div className="dock-tray-usage">
                             {/* Provider quota usage (API billing) */}
                             {hasUsage ? (
-                              <div className="dock-tray-context" title={usage.details}>
+                              <div
+                                className="dock-tray-context"
+                                title={usage.details}
+                              >
                                 {usage.usagePercent !== null ? (
                                   <>
                                     <div className="context-bar">
-                                      <div className="context-bar-fill" style={{ width: `${barPercent}%`, backgroundColor: barColor }} />
+                                      <div
+                                        className="context-bar-fill"
+                                        style={{
+                                          width: `${barPercent}%`,
+                                          backgroundColor: barColor,
+                                        }}
+                                      />
                                     </div>
-                                    <span className="context-bar-label">{usage.usageLabel}</span>
+                                    <span className="context-bar-label">
+                                      {usage.usageLabel}
+                                    </span>
                                   </>
                                 ) : (
-                                  <span className="context-bar-label">{usage.usageLabel}</span>
+                                  <span className="context-bar-label">
+                                    {usage.usageLabel}
+                                  </span>
                                 )}
                               </div>
                             ) : (
-                              <span className="dock-tray-context-label">{usage?.usageLabel || "Not connected"}</span>
+                              <span className="dock-tray-context-label">
+                                {usage?.usageLabel || "Not connected"}
+                              </span>
                             )}
-                            
+
                             {/* Session context window tracking */}
                             {sessionDetail && contextUsed > 0 && (
-                              <div className="dock-tray-session-context" title={`Context window: ${formatTokens(contextUsed)} / ${formatTokens(modelMaxContext)}\nRemaining: ${formatTokens(contextRemaining)}`}>
+                              <div
+                                className="dock-tray-session-context"
+                                title={`Context window: ${formatTokens(contextUsed)} / ${formatTokens(modelMaxContext)}\nRemaining: ${formatTokens(contextRemaining)}`}
+                              >
                                 <div className="context-bar">
-                                  <div className="context-bar-fill" style={{ width: `${contextPercent}%`, backgroundColor: contextColor }} />
+                                  <div
+                                    className="context-bar-fill"
+                                    style={{
+                                      width: `${contextPercent}%`,
+                                      backgroundColor: contextColor,
+                                    }}
+                                  />
                                 </div>
-                                <span className="context-bar-label">{formatTokens(contextUsed)} / {formatTokens(modelMaxContext)}</span>
+                                <span className="context-bar-label">
+                                  {formatTokens(contextUsed)} /{" "}
+                                  {formatTokens(modelMaxContext)}
+                                </span>
                               </div>
                             )}
-                            
+
                             {sessionDetail ? (
-                              <span className="dock-tray-requests" title={`${sessionUsage.requestCount} AI request${sessionUsage.requestCount !== 1 ? "s" : ""} in this session\n${sessionUsage.totalTokens > 0 ? `Tokens: ${formatTokens(sessionUsage.totalInputTokens)} in / ${formatTokens(sessionUsage.totalOutputTokens)} out (${formatTokens(sessionUsage.totalTokens)} total)` : ""}`}>
+                              <span
+                                className="dock-tray-requests"
+                                title={`${sessionUsage.requestCount} AI request${sessionUsage.requestCount !== 1 ? "s" : ""} in this session\n${sessionUsage.totalTokens > 0 ? `Tokens: ${formatTokens(sessionUsage.totalInputTokens)} in / ${formatTokens(sessionUsage.totalOutputTokens)} out (${formatTokens(sessionUsage.totalTokens)} total)` : ""}`}
+                              >
                                 <Zap size={11} />
-                                {sessionUsage.requestCount} req{sessionUsage.requestCount !== 1 ? "s" : ""}
-                                {sessionUsage.totalTokens > 0 ? ` · ${formatTokens(sessionUsage.totalTokens)}` : ""}
+                                {sessionUsage.requestCount} req
+                                {sessionUsage.requestCount !== 1 ? "s" : ""}
+                                {sessionUsage.totalTokens > 0
+                                  ? ` · ${formatTokens(sessionUsage.totalTokens)}`
+                                  : ""}
                               </span>
                             ) : (
-                              <span className="dock-tray-no-session">No session</span>
+                              <span className="dock-tray-no-session">
+                                No session
+                              </span>
                             )}
                           </div>
                         );
@@ -2608,11 +3383,13 @@ export default function App() {
                         <div className="terminal-status-row">
                           {xtermReady ? (
                             <span className="terminal-connected">
-                              <span className="auth-status-dot connected" /> PTY connected
+                              <span className="auth-status-dot connected" /> PTY
+                              connected
                             </span>
                           ) : (
                             <span className="terminal-disconnected">
-                              <LoaderCircle className="spin" size={11} /> Connecting...
+                              <LoaderCircle className="spin" size={11} />{" "}
+                              Connecting...
                             </span>
                           )}
                           <div className="terminal-status-actions">
@@ -2627,7 +3404,8 @@ export default function App() {
                                 const lines: string[] = [];
                                 for (let i = 0; i < buf.length; i++) {
                                   const line = buf.getLine(i);
-                                  if (line) lines.push(line.translateToString(true));
+                                  if (line)
+                                    lines.push(line.translateToString(true));
                                 }
                                 const text = lines.join("\n").trimEnd();
                                 if (text) navigator.clipboard.writeText(text);
@@ -2651,7 +3429,9 @@ export default function App() {
                         <div
                           ref={xtermContainerRef}
                           className="xterm-container"
-                          style={{ display: dockTab === "terminal" ? "block" : "none" }}
+                          style={{
+                            display: dockTab === "terminal" ? "block" : "none",
+                          }}
                         />
 
                         {dockTab === "changes" ? (
@@ -2661,7 +3441,12 @@ export default function App() {
                             ) : (
                               <div className="changes-grid">
                                 {changedFiles.map((file) => (
-                                  <button key={file.id} className="change-row" type="button" onClick={() => openFile(file.id)}>
+                                  <button
+                                    key={file.id}
+                                    className="change-row"
+                                    type="button"
+                                    onClick={() => openFile(file.id)}
+                                  >
                                     <strong>{file.name}</strong>
                                     <span>{file.path}</span>
                                   </button>
@@ -2676,16 +3461,26 @@ export default function App() {
                             {sessionDetail ? (
                               <div className="activity-list">
                                 {sessionDetail.messages
-                                  .filter((message) => message.role === "system")
+                                  .filter(
+                                    (message) => message.role === "system",
+                                  )
                                   .map((message) => (
-                                    <article key={message.id} className="activity-row">
+                                    <article
+                                      key={message.id}
+                                      className="activity-row"
+                                    >
                                       <span>{message.content}</span>
-                                      <small>{formatTime(message.createdAt)}</small>
+                                      <small>
+                                        {formatTime(message.createdAt)}
+                                      </small>
                                     </article>
                                   ))}
                               </div>
                             ) : (
-                              <p className="empty-inline">Session activity appears after you start a thread.</p>
+                              <p className="empty-inline">
+                                Session activity appears after you start a
+                                thread.
+                              </p>
                             )}
                           </div>
                         ) : null}
@@ -2708,7 +3503,11 @@ export default function App() {
                       <span className="pane-kicker">Editor</span>
                       <h2>{activeFile?.path ?? "No file"}</h2>
                     </div>
-                    <button className="pane-button" type="button" onClick={() => setShowRightPanel(false)}>
+                    <button
+                      className="pane-button"
+                      type="button"
+                      onClick={() => setShowRightPanel(false)}
+                    >
                       <X size={12} />
                       <span>Close</span>
                     </button>
@@ -2762,7 +3561,7 @@ export default function App() {
                           onChange={(value) => {
                             setDrafts((current) => ({
                               ...current,
-                              [activeFile.id]: value ?? ""
+                              [activeFile.id]: value ?? "",
                             }));
                           }}
                           options={{
@@ -2773,7 +3572,7 @@ export default function App() {
                             scrollBeyondLastLine: false,
                             smoothScrolling: true,
                             padding: { top: 10 },
-                            wordWrap: "off"
+                            wordWrap: "off",
                           }}
                         />
                       ) : (
@@ -2793,7 +3592,10 @@ export default function App() {
                       </div>
                       <div className="tree-root compact-scroll">
                         {(filteredTree?.children ?? []).map((node) => {
-                          const renderNode = (item: TreeNode, depth: number) => {
+                          const renderNode = (
+                            item: TreeNode,
+                            depth: number,
+                          ) => {
                             const key = item.path;
                             if (item.type === "folder") {
                               const expanded = expandedGroups[key] ?? true;
@@ -2806,23 +3608,31 @@ export default function App() {
                                     onClick={() =>
                                       setExpandedGroups((current) => ({
                                         ...current,
-                                        [key]: !expanded
+                                        [key]: !expanded,
                                       }))
                                     }
                                   >
-                                    {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                    {expanded ? (
+                                      <ChevronDown size={12} />
+                                    ) : (
+                                      <ChevronRight size={12} />
+                                    )}
                                     <span>{item.name}</span>
                                   </button>
                                   {expanded && item.children ? (
                                     <div className="tree-items">
-                                      {item.children.map((child) => renderNode(child, depth + 1))}
+                                      {item.children.map((child) =>
+                                        renderNode(child, depth + 1),
+                                      )}
                                     </div>
                                   ) : null}
                                 </div>
                               );
                             }
                             const file = item.file!;
-                            const dirty = changedFiles.some((f) => f.id === file.id);
+                            const dirty = changedFiles.some(
+                              (f) => f.id === file.id,
+                            );
                             return (
                               <button
                                 key={file.id}
@@ -2845,12 +3655,24 @@ export default function App() {
 
                   {activeFile ? (
                     <div className="context-footer">
-                      <button className="pane-button" type="button" onClick={() => void loadWorkspace()}>
+                      <button
+                        className="pane-button"
+                        type="button"
+                        onClick={() => void loadWorkspace()}
+                      >
                         <Search size={12} />
                         <span>Refresh</span>
                       </button>
-                      <button className="titlebar-action primary" type="button" onClick={() => void handleSaveFile()}>
-                        {saving ? <LoaderCircle className="spin" size={13} /> : <FileCode2 size={13} />}
+                      <button
+                        className="titlebar-action primary"
+                        type="button"
+                        onClick={() => void handleSaveFile()}
+                      >
+                        {saving ? (
+                          <LoaderCircle className="spin" size={13} />
+                        ) : (
+                          <FileCode2 size={13} />
+                        )}
                         <span>{saving ? "Saving" : "Save"}</span>
                       </button>
                     </div>
@@ -2864,11 +3686,21 @@ export default function App() {
 
       {/* ===== Settings overlay ===== */}
       {showSettings ? (
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)}>
-          <div className="overlay-panel settings-overlay" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="overlay-backdrop"
+          onClick={() => setShowSettings(false)}
+        >
+          <div
+            className="overlay-panel settings-overlay"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="overlay-header">
               <h2>Settings</h2>
-              <button className="overlay-close" type="button" onClick={() => setShowSettings(false)}>
+              <button
+                className="overlay-close"
+                type="button"
+                onClick={() => setShowSettings(false)}
+              >
                 <X size={14} />
               </button>
             </div>
@@ -2882,25 +3714,31 @@ export default function App() {
                 <div className="auth-provider-card">
                   <div className="auth-provider-header">
                     <div className="auth-provider-info">
-                      <span className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? "connected" : "disconnected"}`} />
+                      <span
+                        className={`auth-status-dot ${authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? "connected" : "disconnected"}`}
+                      />
                       <strong>GitHub Copilot</strong>
                     </div>
                     <span className="auth-method-badge">
-                      {authStatus?.providers.find((p) => p.id === "copilot")?.method === "env"
+                      {authStatus?.providers.find((p) => p.id === "copilot")
+                        ?.method === "env"
                         ? "ENV"
-                        : authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth"
+                        : authStatus?.providers.find((p) => p.id === "copilot")
+                              ?.method === "oauth"
                           ? "OAuth"
                           : "—"}
                     </span>
                   </div>
 
-                  {authStatus?.providers.find((p) => p.id === "copilot")?.status === "connected" ? (
+                  {authStatus?.providers.find((p) => p.id === "copilot")
+                    ?.status === "connected" ? (
                     <div className="auth-connected-row">
                       <span className="auth-connected-label">
                         <Check size={12} />
                         Connected
                       </span>
-                      {authStatus?.providers.find((p) => p.id === "copilot")?.method === "oauth" ? (
+                      {authStatus?.providers.find((p) => p.id === "copilot")
+                        ?.method === "oauth" ? (
                         <button
                           className="auth-remove-btn"
                           type="button"
@@ -2917,9 +3755,16 @@ export default function App() {
                   ) : githubDevice ? (
                     <div className="github-device-flow">
                       <p className="device-flow-instruction">
-                        Go to <a href={githubDevice.verificationUri} target="_blank" rel="noopener noreferrer">
-                          {githubDevice.verificationUri} <ExternalLink size={11} />
-                        </a> and enter the code:
+                        Go to{" "}
+                        <a
+                          href={githubDevice.verificationUri}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {githubDevice.verificationUri}{" "}
+                          <ExternalLink size={11} />
+                        </a>{" "}
+                        and enter the code:
                       </p>
                       <div className="device-code-display">
                         <code>{githubDevice.userCode}</code>
@@ -2928,7 +3773,11 @@ export default function App() {
                           type="button"
                           onClick={() => copyToClipboard(githubDevice.userCode)}
                         >
-                          {copiedCode ? <Check size={12} /> : <Copy size={12} />}
+                          {copiedCode ? (
+                            <Check size={12} />
+                          ) : (
+                            <Copy size={12} />
+                          )}
                         </button>
                       </div>
                       {githubPolling ? (
@@ -2961,7 +3810,9 @@ export default function App() {
                         ) : (
                           <LogIn size={13} />
                         )}
-                        <span>{githubStarting ? "Starting..." : "Login with GitHub"}</span>
+                        <span>
+                          {githubStarting ? "Starting..." : "Login with GitHub"}
+                        </span>
                       </button>
                       <p className="auth-helper-text">
                         Requires a GitHub Copilot subscription
@@ -2971,133 +3822,193 @@ export default function App() {
                 </div>
 
                 {/* API Key providers: OpenAI, Anthropic, OpenRouter */}
-                {(["openai", "anthropic", "openrouter"] as const).map((providerId) => {
-                  const providerInfo = authStatus?.providers.find((p) => p.id === providerId);
-                  const isConnected = providerInfo?.status === "connected";
-                  const method = providerInfo?.method ?? "none";
-                  const labelText = providerInfo?.label ?? providerId;
-                  const keyInput = apiKeyInputs[providerId] ?? "";
-                  const isVisible = apiKeyVisible[providerId] ?? false;
+                {(["openai", "anthropic", "openrouter"] as const).map(
+                  (providerId) => {
+                    const providerInfo = authStatus?.providers.find(
+                      (p) => p.id === providerId,
+                    );
+                    const isConnected = providerInfo?.status === "connected";
+                    const method = providerInfo?.method ?? "none";
+                    const labelText = providerInfo?.label ?? providerId;
+                    const keyInput = apiKeyInputs[providerId] ?? "";
+                    const isVisible = apiKeyVisible[providerId] ?? false;
 
-                  return (
-                    <div key={providerId} className="auth-provider-card">
-                      <div className="auth-provider-header">
-                        <div className="auth-provider-info">
-                          <span className={`auth-status-dot ${isConnected ? "connected" : "disconnected"}`} />
-                          <strong>{labelText}</strong>
-                        </div>
-                        <span className="auth-method-badge">
-                          {method === "env" ? "ENV" : method === "stored_key" ? "Key" : "—"}
-                        </span>
-                      </div>
-
-                      {isConnected ? (
-                        <div className="auth-connected-row">
-                          <span className="auth-connected-label">
-                            <Check size={12} />
-                            Connected
-                          </span>
-                          {method === "stored_key" ? (
-                            <button
-                              className="auth-remove-btn"
-                              type="button"
-                              onClick={() => void removeApiKey(providerId)}
-                              disabled={removingKey === providerId}
-                            >
-                              <X size={12} />
-                              <span>{removingKey === providerId ? "..." : "Remove"}</span>
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div className="auth-key-input-row">
-                          <div className="auth-key-input-wrap">
-                            <Key size={12} className="auth-key-icon" />
-                            <input
-                              type={isVisible ? "text" : "password"}
-                              value={keyInput}
-                              onChange={(e) =>
-                                setApiKeyInputs((current) => ({ ...current, [providerId]: e.target.value }))
-                              }
-                              placeholder={`Paste ${labelText} API key`}
+                    return (
+                      <div key={providerId} className="auth-provider-card">
+                        <div className="auth-provider-header">
+                          <div className="auth-provider-info">
+                            <span
+                              className={`auth-status-dot ${isConnected ? "connected" : "disconnected"}`}
                             />
+                            <strong>{labelText}</strong>
+                          </div>
+                          <span className="auth-method-badge">
+                            {method === "env"
+                              ? "ENV"
+                              : method === "stored_key"
+                                ? "Key"
+                                : "—"}
+                          </span>
+                        </div>
+
+                        {isConnected ? (
+                          <div className="auth-connected-row">
+                            <span className="auth-connected-label">
+                              <Check size={12} />
+                              Connected
+                            </span>
+                            {method === "stored_key" ? (
+                              <button
+                                className="auth-remove-btn"
+                                type="button"
+                                onClick={() => void removeApiKey(providerId)}
+                                disabled={removingKey === providerId}
+                              >
+                                <X size={12} />
+                                <span>
+                                  {removingKey === providerId
+                                    ? "..."
+                                    : "Remove"}
+                                </span>
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="auth-key-input-row">
+                            <div className="auth-key-input-wrap">
+                              <Key size={12} className="auth-key-icon" />
+                              <input
+                                type={isVisible ? "text" : "password"}
+                                value={keyInput}
+                                onChange={(e) =>
+                                  setApiKeyInputs((current) => ({
+                                    ...current,
+                                    [providerId]: e.target.value,
+                                  }))
+                                }
+                                placeholder={`Paste ${labelText} API key`}
+                              />
+                              <button
+                                className="auth-visibility-btn"
+                                type="button"
+                                onClick={() =>
+                                  setApiKeyVisible((current) => ({
+                                    ...current,
+                                    [providerId]: !isVisible,
+                                  }))
+                                }
+                              >
+                                {isVisible ? (
+                                  <EyeOff size={12} />
+                                ) : (
+                                  <Eye size={12} />
+                                )}
+                              </button>
+                            </div>
                             <button
-                              className="auth-visibility-btn"
+                              className="auth-save-btn"
                               type="button"
                               onClick={() =>
-                                setApiKeyVisible((current) => ({ ...current, [providerId]: !isVisible }))
+                                void saveApiKey(providerId, keyInput)
+                              }
+                              disabled={
+                                !keyInput.trim() || savingKey === providerId
                               }
                             >
-                              {isVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                              {savingKey === providerId ? (
+                                <LoaderCircle className="spin" size={12} />
+                              ) : (
+                                <Check size={12} />
+                              )}
+                              <span>
+                                {savingKey === providerId ? "..." : "Save"}
+                              </span>
                             </button>
                           </div>
-                          <button
-                            className="auth-save-btn"
-                            type="button"
-                            onClick={() => void saveApiKey(providerId, keyInput)}
-                            disabled={!keyInput.trim() || savingKey === providerId}
-                          >
-                            {savingKey === providerId ? (
-                              <LoaderCircle className="spin" size={12} />
-                            ) : (
-                              <Check size={12} />
-                            )}
-                            <span>{savingKey === providerId ? "..." : "Save"}</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                        )}
+                      </div>
+                    );
+                  },
+                )}
               </div>
 
               {/* --- Model Toggles Section --- */}
               <div className="overlay-section">
                 <h3 className="overlay-section-title">Models</h3>
-                <p className="overlay-section-desc">Enable or disable models. Only enabled models appear in the dropdown.</p>
-                
+                <p className="overlay-section-desc">
+                  Enable or disable models. Only enabled models appear in the
+                  dropdown.
+                </p>
+
                 {/* Grouped model list by provider - only show connected providers */}
-                {(snapshot?.providers ?? []).filter(p => p.status === "connected").length === 0 ? (
-                  <p className="overlay-section-desc" style={{ color: "var(--text-weak)", fontStyle: "italic" }}>
+                {(snapshot?.providers ?? []).filter(
+                  (p) => p.status === "connected",
+                ).length === 0 ? (
+                  <p
+                    className="overlay-section-desc"
+                    style={{ color: "var(--text-weak)", fontStyle: "italic" }}
+                  >
                     Connect a provider above to see available models.
                   </p>
                 ) : (
                   <div className="models-categorized">
-                    {(snapshot?.providers ?? []).filter(p => p.status === "connected").map((prov) => (
-                    <div key={prov.id} className="models-category">
-                      <div className="models-category-header">
-                        <span className={`auth-status-dot ${prov.status === "connected" ? "connected" : "disconnected"}`} />
-                        <strong>{prov.label}</strong>
-                        <span className="models-count">{(prov.models ?? []).filter(m => !disabledModels[m]).length} / {prov.models?.length ?? 0}</span>
-                      </div>
-                      <div className="models-category-list">
-                        {(prov.models ?? []).map((m) => {
-                          const isOff = disabledModels[m] === true;
-                          const contextLabel = getModelContextLabel(m, modelContextLimits);
-                          return (
-                            <label key={m} className="model-toggle-item">
-                              <input
-                                type="checkbox"
-                                checked={!isOff}
-                                onChange={() => setDisabledModels((prev) => {
-                                  const next = { ...prev };
-                                  if (isOff) {
-                                    delete next[m];
-                                  } else {
-                                    next[m] = true;
-                                  }
-                                  return next;
-                                })}
-                              />
-                              <span className="model-name">{prettifyModelId(m)}</span>
-                              {contextLabel && <span className="model-context">{contextLabel}</span>}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    {(snapshot?.providers ?? [])
+                      .filter((p) => p.status === "connected")
+                      .map((prov) => (
+                        <div key={prov.id} className="models-category">
+                          <div className="models-category-header">
+                            <span
+                              className={`auth-status-dot ${prov.status === "connected" ? "connected" : "disconnected"}`}
+                            />
+                            <strong>{prov.label}</strong>
+                            <span className="models-count">
+                              {
+                                (prov.models ?? []).filter(
+                                  (m) => !disabledModels[m],
+                                ).length
+                              }{" "}
+                              / {prov.models?.length ?? 0}
+                            </span>
+                          </div>
+                          <div className="models-category-list">
+                            {(prov.models ?? []).map((m) => {
+                              const isOff = disabledModels[m] === true;
+                              const contextLabel = getModelContextLabel(
+                                m,
+                                modelContextLimits,
+                              );
+                              return (
+                                <label key={m} className="model-toggle-item">
+                                  <input
+                                    type="checkbox"
+                                    checked={!isOff}
+                                    onChange={() =>
+                                      setDisabledModels((prev) => {
+                                        const next = { ...prev };
+                                        if (isOff) {
+                                          delete next[m];
+                                        } else {
+                                          next[m] = true;
+                                        }
+                                        return next;
+                                      })
+                                    }
+                                  />
+                                  <span className="model-name">
+                                    {prettifyModelId(m)}
+                                  </span>
+                                  {contextLabel && (
+                                    <span className="model-context">
+                                      {contextLabel}
+                                    </span>
+                                  )}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -3108,33 +4019,55 @@ export default function App() {
       {/* ===== Permission request modal ===== */}
       {pendingPermissions.length > 0 ? (
         <div className="overlay-backdrop" onClick={() => undefined}>
-          <div className="permission-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="permission-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="permission-header">
               <CircleAlert size={14} />
               <span>Permission required</span>
             </div>
             <p>
-              Alpha Code wants to run <strong>{pendingPermissions[0]?.action}</strong>.
+              Alpha Code wants to run{" "}
+              <strong>{pendingPermissions[0]?.action}</strong>.
             </p>
             <div className="permission-actions">
               <button
                 className="permission-btn"
                 type="button"
-                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, false, false)}
+                onClick={() =>
+                  void approvePermission(
+                    pendingPermissions[0]!.toolCallId,
+                    false,
+                    false,
+                  )
+                }
               >
                 Deny
               </button>
               <button
                 className="permission-btn"
                 type="button"
-                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, true, false)}
+                onClick={() =>
+                  void approvePermission(
+                    pendingPermissions[0]!.toolCallId,
+                    true,
+                    false,
+                  )
+                }
               >
                 Allow once
               </button>
               <button
                 className="permission-btn primary"
                 type="button"
-                onClick={() => void approvePermission(pendingPermissions[0]!.toolCallId, true, true)}
+                onClick={() =>
+                  void approvePermission(
+                    pendingPermissions[0]!.toolCallId,
+                    true,
+                    true,
+                  )
+                }
               >
                 Allow for session
               </button>
@@ -3145,7 +4078,13 @@ export default function App() {
 
       {/* ===== Search popup (Cmd+K) ===== */}
       {showSearchPopup ? (
-        <div className="overlay-backdrop" onClick={() => { setShowSearchPopup(false); setSearchQuery(""); }}>
+        <div
+          className="overlay-backdrop"
+          onClick={() => {
+            setShowSearchPopup(false);
+            setSearchQuery("");
+          }}
+        >
           <div className="search-popup" onClick={(e) => e.stopPropagation()}>
             <div className="search-popup-input-row">
               <Search size={14} className="search-popup-icon" />
@@ -3201,8 +4140,12 @@ export default function App() {
                 <div className="search-popup-hint">
                   <span>Type to search files and content</span>
                   <div className="search-popup-shortcuts">
-                    <span><kbd>Enter</kbd> Open file</span>
-                    <span><kbd>Esc</kbd> Close</span>
+                    <span>
+                      <kbd>Enter</kbd> Open file
+                    </span>
+                    <span>
+                      <kbd>Esc</kbd> Close
+                    </span>
                   </div>
                 </div>
               )}
@@ -3213,12 +4156,26 @@ export default function App() {
 
       {/* ===== Project switcher popup ===== */}
       {showProjectSwitcher ? (
-        <div className="overlay-backdrop" onClick={() => { setShowProjectSwitcher(false); setProjectFilter(""); setProjectPathInput(""); }}>
-          <div className="branch-popup project-popup" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="overlay-backdrop"
+          onClick={() => {
+            setShowProjectSwitcher(false);
+            setProjectFilter("");
+            setProjectPathInput("");
+          }}
+        >
+          <div
+            className="branch-popup project-popup"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="branch-popup-header">
               <FolderGit2 size={14} />
               <span>Switch Project</span>
-              <button className="branch-popup-close" type="button" onClick={() => setShowProjectSwitcher(false)}>
+              <button
+                className="branch-popup-close"
+                type="button"
+                onClick={() => setShowProjectSwitcher(false)}
+              >
                 <X size={14} />
               </button>
             </div>
@@ -3232,7 +4189,10 @@ export default function App() {
                 onChange={(e) => setProjectFilter(e.target.value)}
                 placeholder="Filter projects..."
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") { setShowProjectSwitcher(false); setProjectFilter(""); }
+                  if (e.key === "Escape") {
+                    setShowProjectSwitcher(false);
+                    setProjectFilter("");
+                  }
                 }}
               />
             </div>
@@ -3254,7 +4214,16 @@ export default function App() {
                 {/* Current project */}
                 {recentProjects
                   .filter((p) => p.path === snapshot?.workspace?.root)
-                  .filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase()))
+                  .filter(
+                    (p) =>
+                      !projectFilter ||
+                      p.name
+                        .toLowerCase()
+                        .includes(projectFilter.toLowerCase()) ||
+                      p.path
+                        .toLowerCase()
+                        .includes(projectFilter.toLowerCase()),
+                  )
                   .map((p) => (
                     <div key={p.path} className="branch-row current">
                       <FolderGit2 size={13} />
@@ -3266,7 +4235,16 @@ export default function App() {
                 {/* Other recent projects */}
                 {recentProjects
                   .filter((p) => p.path !== snapshot?.workspace?.root)
-                  .filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase()))
+                  .filter(
+                    (p) =>
+                      !projectFilter ||
+                      p.name
+                        .toLowerCase()
+                        .includes(projectFilter.toLowerCase()) ||
+                      p.path
+                        .toLowerCase()
+                        .includes(projectFilter.toLowerCase()),
+                  )
                   .map((p) => (
                     <button
                       key={p.path}
@@ -3278,12 +4256,21 @@ export default function App() {
                     >
                       <FolderGit2 size={13} />
                       <span className="branch-name">{p.name}</span>
-                      <span className="branch-tag">{p.path.replace(/^\/Users\/[^/]+/, "~")}</span>
+                      <span className="branch-tag">
+                        {p.path.replace(/^\/Users\/[^/]+/, "~")}
+                      </span>
                     </button>
                   ))}
 
                 {/* No results */}
-                {recentProjects.filter((p) => !projectFilter || p.name.toLowerCase().includes(projectFilter.toLowerCase()) || p.path.toLowerCase().includes(projectFilter.toLowerCase())).length === 0 ? (
+                {recentProjects.filter(
+                  (p) =>
+                    !projectFilter ||
+                    p.name
+                      .toLowerCase()
+                      .includes(projectFilter.toLowerCase()) ||
+                    p.path.toLowerCase().includes(projectFilter.toLowerCase()),
+                ).length === 0 ? (
                   <div className="branch-popup-empty">No matching projects</div>
                 ) : null}
               </div>
@@ -3300,7 +4287,10 @@ export default function App() {
                   placeholder="Paste a folder path..."
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleOpenProjectPath();
-                    if (e.key === "Escape") { setShowProjectSwitcher(false); setProjectPathInput(""); }
+                    if (e.key === "Escape") {
+                      setShowProjectSwitcher(false);
+                      setProjectPathInput("");
+                    }
                   }}
                 />
                 <button
@@ -3309,7 +4299,11 @@ export default function App() {
                   disabled={!projectPathInput.trim() || projectLoading}
                   onClick={handleOpenProjectPath}
                 >
-                  {projectLoading ? <LoaderCircle className="spin" size={12} /> : "Open"}
+                  {projectLoading ? (
+                    <LoaderCircle className="spin" size={12} />
+                  ) : (
+                    "Open"
+                  )}
                 </button>
               </div>
               {isElectron ? (
@@ -3330,12 +4324,23 @@ export default function App() {
 
       {/* ===== Branch switcher popup ===== */}
       {showBranchSwitcher ? (
-        <div className="overlay-backdrop" onClick={() => { setShowBranchSwitcher(false); setBranchFilter(""); setNewBranchName(""); }}>
+        <div
+          className="overlay-backdrop"
+          onClick={() => {
+            setShowBranchSwitcher(false);
+            setBranchFilter("");
+            setNewBranchName("");
+          }}
+        >
           <div className="branch-popup" onClick={(e) => e.stopPropagation()}>
             <div className="branch-popup-header">
               <GitBranch size={14} />
               <span>Switch Branch</span>
-              <button className="branch-popup-close" type="button" onClick={() => setShowBranchSwitcher(false)}>
+              <button
+                className="branch-popup-close"
+                type="button"
+                onClick={() => setShowBranchSwitcher(false)}
+              >
                 <X size={14} />
               </button>
             </div>
@@ -3349,7 +4354,10 @@ export default function App() {
                 onChange={(e) => setBranchFilter(e.target.value)}
                 placeholder="Filter branches..."
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") { setShowBranchSwitcher(false); setBranchFilter(""); }
+                  if (e.key === "Escape") {
+                    setShowBranchSwitcher(false);
+                    setBranchFilter("");
+                  }
                 }}
               />
             </div>
@@ -3369,7 +4377,11 @@ export default function App() {
             ) : branchData ? (
               <div className="branch-popup-list compact-scroll">
                 {/* Current branch */}
-                {branchData.current && (!branchFilter || branchData.current.toLowerCase().includes(branchFilter.toLowerCase())) ? (
+                {branchData.current &&
+                (!branchFilter ||
+                  branchData.current
+                    .toLowerCase()
+                    .includes(branchFilter.toLowerCase())) ? (
                   <div className="branch-row current">
                     <GitBranch size={13} />
                     <span className="branch-name">{branchData.current}</span>
@@ -3379,7 +4391,12 @@ export default function App() {
 
                 {/* Local branches */}
                 {branchData.local
-                  .filter((b) => b !== branchData.current && (!branchFilter || b.toLowerCase().includes(branchFilter.toLowerCase())))
+                  .filter(
+                    (b) =>
+                      b !== branchData.current &&
+                      (!branchFilter ||
+                        b.toLowerCase().includes(branchFilter.toLowerCase())),
+                  )
                   .map((b) => (
                     <button
                       key={b}
@@ -3396,7 +4413,11 @@ export default function App() {
 
                 {/* Remote-only branches */}
                 {branchData.remote
-                  .filter((b) => !branchFilter || b.toLowerCase().includes(branchFilter.toLowerCase()))
+                  .filter(
+                    (b) =>
+                      !branchFilter ||
+                      b.toLowerCase().includes(branchFilter.toLowerCase()),
+                  )
                   .map((b) => (
                     <button
                       key={`remote-${b}`}
@@ -3414,10 +4435,15 @@ export default function App() {
                 {/* No results */}
                 {(() => {
                   const q = branchFilter.toLowerCase();
-                  const anyMatch = branchData.current.toLowerCase().includes(q)
-                    || branchData.local.some((b) => b.toLowerCase().includes(q))
-                    || branchData.remote.some((b) => b.toLowerCase().includes(q));
-                  return !anyMatch ? <div className="branch-popup-empty">No matching branches</div> : null;
+                  const anyMatch =
+                    branchData.current.toLowerCase().includes(q) ||
+                    branchData.local.some((b) => b.toLowerCase().includes(q)) ||
+                    branchData.remote.some((b) => b.toLowerCase().includes(q));
+                  return !anyMatch ? (
+                    <div className="branch-popup-empty">
+                      No matching branches
+                    </div>
+                  ) : null;
                 })()}
               </div>
             ) : null}
@@ -3433,7 +4459,10 @@ export default function App() {
                   placeholder="New branch name..."
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreateBranch();
-                    if (e.key === "Escape") { setShowBranchSwitcher(false); setNewBranchName(""); }
+                    if (e.key === "Escape") {
+                      setShowBranchSwitcher(false);
+                      setNewBranchName("");
+                    }
                   }}
                 />
                 <button
@@ -3442,7 +4471,11 @@ export default function App() {
                   disabled={!newBranchName.trim() || branchLoading}
                   onClick={handleCreateBranch}
                 >
-                  {branchLoading ? <LoaderCircle className="spin" size={12} /> : "Create"}
+                  {branchLoading ? (
+                    <LoaderCircle className="spin" size={12} />
+                  ) : (
+                    "Create"
+                  )}
                 </button>
               </div>
               {branchData?.hasUncommittedChanges ? (
@@ -3459,7 +4492,11 @@ export default function App() {
       {error ? (
         <div className="toast-error">
           <span>{error}</span>
-          <button className="toast-close" type="button" onClick={() => setError("")}>
+          <button
+            className="toast-close"
+            type="button"
+            onClick={() => setError("")}
+          >
             <X size={12} />
           </button>
         </div>
@@ -3467,7 +4504,11 @@ export default function App() {
       {shareNotice ? (
         <div className="toast-success">
           <span>{shareNotice}</span>
-          <button className="toast-close" type="button" onClick={() => setShareNotice("")}>
+          <button
+            className="toast-close"
+            type="button"
+            onClick={() => setShareNotice("")}
+          >
             <X size={12} />
           </button>
         </div>

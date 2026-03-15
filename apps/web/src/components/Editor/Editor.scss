@@ -1,0 +1,245 @@
+.right-panel {
+  border-left: 1px solid var(--border-weaker-base);
+  background: var(--background-base);
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+.context-summary-row {
+  min-height: 32px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-weak);
+  font-size: 12px;
+  border-top: 1px solid var(--border-weaker-base);
+}
+
+.tab-strip {
+  min-height: 36px;
+  padding: 6px 8px;
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-weaker-base);
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tab-chip {
+  flex-shrink: 0;
+}
+
+.tab-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+
+.tab-chip-main > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-chip.active {
+  border-color: var(--border-base);
+  background: var(--surface-raised-base);
+  color: var(--text-strong);
+}
+
+.tab-chip-close {
+  color: var(--text-weaker);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tab-chip-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-strong);
+}
+
+.editor-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  overflow: hidden;
+  height: 100%;
+}
+
+.editor-pane {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.empty-editor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-weak);
+  font-size: 13px;
+}
+
+.editor-sidebar {
+  border-left: 1px solid var(--border-weaker-base);
+  padding: 8px;
+  background: var(--background-strong);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  height: 100%;
+}
+
+.tree-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-weaker-base);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-weak);
+}
+
+.tree-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 12px;
+  width: 100%;
+}
+
+.tree-root {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.tree-group + .tree-group {
+  margin-top: 6px;
+}
+
+.tree-header {
+  width: 100%;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-base);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+
+.tree-header:hover {
+  background: var(--surface-hover);
+}
+
+.tree-items {
+  margin-left: 0;
+}
+
+.tree-item {
+  width: 100%;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-weak);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.tree-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-base);
+}
+
+.tree-item.active {
+  background: var(--surface-strong);
+  color: var(--text-strong);
+}
+
+.tree-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.context-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-weaker-base);
+  background: var(--background-strong);
+}
+
+.resize-handle {
+  background: var(--border-weaker-base);
+  transition: background 0.15s;
+}
+
+.resize-handle:hover {
+  background: var(--primary);
+}
+
+.resize-handle.horizontal {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.resize-handle.vertical {
+  width: 4px;
+  cursor: col-resize;
+}

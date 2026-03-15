@@ -1,0 +1,47 @@
+.loading-shell {
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--background-base);
+}
+
+.loading-mark,
+.error-block {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  color: var(--text-base);
+}
+
+.loading-mark small {
+  font-size: 12px;
+  color: var(--text-weak);
+}
+
+.error-block p {
+  margin: 0;
+  color: var(--error);
+}
+
+.logo-block {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  box-shadow: 0 0 12px rgba(250, 178, 131, 0.3);
+}
+
+.retry-btn {
+  margin-top: 8px;
+  padding: 6px 16px;
+  background: var(--interactive-soft);
+  border: 1px solid rgba(3, 76, 255, 0.32);
+  border-radius: var(--radius-md);
+  color: #a0b8ff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: rgba(3, 76, 255, 0.24);
+}
