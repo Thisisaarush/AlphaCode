@@ -1263,6 +1263,11 @@ export default function App() {
     showSettings,
     showBranchSwitcher,
     showProjectSwitcher,
+    activeFileId,
+    openFileIds,
+    files,
+    drafts,
+    activeFile,
   ]);
 
   const isShareRoute = window.location.pathname.startsWith("/share/");
