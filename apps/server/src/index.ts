@@ -329,10 +329,6 @@ let githubDeviceFlow: GitHubDeviceFlowState | null = null;
 const COPILOT_CLIENT_ID = process.env.COPILOT_CLIENT_ID ?? "Ov23li8tweQw6odWQebz";
 
 function getKeyForProvider(providerId: string): string | undefined {
-  if (providerId === "free") {
-    // Server-managed only; end users never provide keys for this provider.
-    return process.env.ALPHA_CODE_FREE_API_KEY;
-  }
   if (providerId === "copilot") {
     // Copilot: OAuth token is the primary auth method
     const oauthToken = storedKeys.get("copilot-oauth");
@@ -361,9 +357,6 @@ async function getKeyForProviderAsync(providerId: string): Promise<string | unde
 }
 
 function getAuthMethod(config: ProviderConfig): AuthMethod {
-  if (config.id === "free") {
-    return process.env.ALPHA_CODE_FREE_API_KEY ? "env" : "none";
-  }
   if (config.id === "copilot") {
     if (storedKeys.has("copilot-oauth")) return "oauth";
     if (process.env.GITHUB_TOKEN) return "env";
@@ -546,25 +539,6 @@ interface ProviderConfig {
 }
 
 const providerConfigs: ProviderConfig[] = [
-  {
-    id: "free",
-    label: "Free",
-    // Server/operator-provided key; end users never enter keys for this provider.
-    // In production, set this to a limited key / gateway that enforces your own rate limits.
-    envKey: "ALPHA_CODE_FREE_API_KEY",
-    // Default: OpenRouter-compatible gateway; can be overridden by pointing this env key at your own proxy.
-    baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "google/gemini-2.0-flash-lite",
-    // Curated "free-tier" defaults (keep small + fast).
-    // Note: exact free availability depends on your gateway/provider configuration.
-    fallbackModels: [
-      "google/gemini-2.0-flash-lite",
-      "meta-llama/llama-3.1-8b-instruct",
-      "mistralai/mistral-7b-instruct",
-      "qwen/qwen2.5-7b-instruct"
-    ],
-    format: "openai"
-  },
   {
     id: "copilot",
     label: "Copilot",
@@ -912,11 +886,6 @@ function deduplicateModels(models: string[]): string[] {
 }
 
 async function fetchModelsForProvider(config: ProviderConfig): Promise<string[]> {
-  // "Free" provider uses a curated static list intentionally.
-  if (config.id === "free") {
-    return config.fallbackModels;
-  }
-  
   // Ollama doesn't require an API key
   if (config.id === "ollama") {
     try {
@@ -3539,10 +3508,6 @@ const server = createServer(async (request, response) => {
     // POST /api/auth/keys — save an API key for a provider
     if (request.method === "POST" && request.url === "/api/auth/keys") {
       const payload = saveKeyInputSchema.parse(await readJsonBody(request));
-      if (payload.provider === "free") {
-        sendJson(response, 400, { error: "The Free provider is server-managed and does not accept user API keys." });
-        return;
-      }
       storedKeys.set(payload.provider, payload.key);
       invalidateModelCache(payload.provider);
       logger.info(`[auth] Stored API key for provider: ${payload.provider}`);
@@ -3554,10 +3519,6 @@ const server = createServer(async (request, response) => {
     // DELETE /api/auth/keys/:provider — remove a stored key
     if (request.method === "DELETE" && request.url?.startsWith("/api/auth/keys/")) {
       const providerId = request.url.replace("/api/auth/keys/", "");
-      if (providerId === "free") {
-        sendJson(response, 400, { error: "The Free provider is server-managed and does not store user keys." });
-        return;
-      }
       storedKeys.delete(providerId);
       invalidateModelCache(providerId);
       logger.info(`[auth] Removed stored key for provider: ${providerId}`);

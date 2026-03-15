@@ -106,58 +106,85 @@ type CiContext = {
 const serverUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3030";
 const wsUrl = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:3031";
 
-/** Known model context window sizes (in tokens). Used for context usage indicator. */
+/** Known model context window sizes (in tokens) - matches server defaults */
 const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  // GPT-5 family
-  "gpt-5": 1_000_000,
-  "gpt-5.4": 1_000_000,
-  "gpt-5-mini": 1_000_000,
-  "gpt-5.2-codex": 1_000_000,
-  "gpt-5.3-codex": 1_000_000,
-  // GPT-4 family
-  "gpt-4o": 128_000,
-  "gpt-4o-mini": 128_000,
-  "gpt-4.1": 1_000_000,
-  "gpt-4.1-mini": 1_000_000,
-  "gpt-4.1-nano": 1_000_000,
-  "gpt-4-turbo": 128_000,
-  // Reasoning models
-  "o1": 200_000,
-  "o1-mini": 128_000,
-  "o1-pro": 200_000,
-  "o3": 200_000,
-  "o3-mini": 200_000,
-  "o4-mini": 200_000,
-  // Claude family
-  "claude-sonnet-4-20250514": 200_000,
-  "claude-opus-4-20250514": 200_000,
-  "claude-3.5-sonnet": 200_000,
-  "claude-3-opus": 200_000,
-  "claude-3-haiku": 200_000,
-  "claude-3.5-haiku": 200_000,
-  // Gemini
-  "gemini-2.5-pro": 1_000_000,
-  "gemini-2.0-flash": 1_000_000,
-  "gemini-1.5-pro": 1_000_000,
+  // GPT-5
+  "gpt-5": 1000000, "gpt-5.1": 1000000, "gpt-5.2": 1000000, "gpt-5.3": 1000000, "gpt-5.4": 1000000,
+  "gpt-5-mini": 1000000, "gpt-5.1-mini": 1000000, "gpt-5-codex": 1000000,
+  // GPT-4.5
+  "gpt-4.5": 1000000, "gpt-4.5-mini": 1000000,
+  // GPT-4.1
+  "gpt-4.1": 1000000, "gpt-4.1-mini": 1000000, "gpt-4.1-nano": 1000000,
+  // GPT-4o
+  "gpt-4o": 128000, "gpt-4o-mini": 128000,
+  // GPT-4 Turbo
+  "gpt-4-turbo": 128000,
+  // GPT-4
+  "gpt-4": 128000,
+  // Reasoning
+  "o1": 200000, "o1-mini": 128000, "o1-preview": 200000, "o1-pro": 200000,
+  "o3": 200000, "o3-mini": 200000, "o3-pro": 200000,
+  "o4-mini": 200000,
+  // Claude 4
+  "claude-opus-4-20250514": 200000, "claude-opus-4-6-20250514": 200000,
+  "claude-sonnet-4-20250514": 200000, "claude-sonnet-4-6-20250514": 200000,
+  "claude-haiku-4-20250514": 200000,
+  // Claude 3.5
+  "claude-3.5-sonnet": 200000, "claude-3.5-haiku": 200000,
+  // Claude 3
+  "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
+  // Gemini 2.5
+  "gemini-2.5-pro": 2000000, "gemini-2.5-flash": 1000000,
+  // Gemini 2.0
+  "gemini-2.0-flash": 1000000, "gemini-2.0-flash-lite": 1000000,
+  // Gemini 1.5
+  "gemini-1.5-pro": 2000000, "gemini-1.5-flash": 1000000,
   // Grok
-  "grok-code-fast-1": 128_000,
+  "grok-2": 131072, "grok-beta": 131072, "grok-code-fast-1": 131072,
   // ChatGPT
-  "chatgpt-4o-latest": 128_000,
+  "chatgpt-4o-latest": 128000,
+  // DeepSeek
+  "deepseek-chat": 64000, "deepseek-coder": 64000, "deepseek-reasoner": 64000,
+  // Llama
+  "llama-4-maverick": 200000, "llama-3.3-70b": 128000, "llama-3.1-405b": 128000,
+  // Mistral
+  "mistral-large": 128000, "mistral-small": 128000,
+  // CodeLlama
+  "codellama-70b": 128000, "codellama-34b": 128000,
+  // Qwen
+  "qwen2.5-coder": 32768,
+  // Kimi
+  "kimi-k2.5": 200000,
+  // MiniMax
+  "minimax-m2.5": 100000,
 };
 
-/** Get context limit for a model, falling back to fuzzy prefix match or default */
-function getModelContextLimit(modelId: string): number {
+/** Get context limit for a model - uses server-provided limits first, then falls back to hardcoded */
+function getModelContextLimit(modelId: string, serverLimits?: Record<string, number>): number {
+  // First check server-provided limits
+  if (serverLimits && serverLimits[modelId]) return serverLimits[modelId];
+  
+  // Fall back to hardcoded
   // Exact match
   if (MODEL_CONTEXT_LIMITS[modelId]) return MODEL_CONTEXT_LIMITS[modelId];
-  // Strip date suffix and try again (e.g. "gpt-4o-2024-08-06" → "gpt-4o")
+  // Strip date suffix and try again
   const base = modelId.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
   if (MODEL_CONTEXT_LIMITS[base]) return MODEL_CONTEXT_LIMITS[base];
   // Prefix match
   for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
     if (modelId.startsWith(key)) return limit;
   }
-  // Default fallback
-  return 128_000;
+  // Default
+  return 128000;
+}
+
+/** Format context limit for display */
+function getModelContextLabel(modelId: string, serverLimits?: Record<string, number>): string | undefined {
+  const limit = getModelContextLimit(modelId, serverLimits);
+  if (limit >= 1000000) return `${(limit / 1000000).toFixed(1)}M`;
+  if (limit >= 100000) return `${(limit / 1000).toFixed(0)}K`;
+  if (limit >= 1000) return `${(limit / 1000).toFixed(0)}K`;
+  return undefined;
 }
 
 /** Format token count for display (e.g. 12345 → "12.3K", 1234567 → "1.2M") */
@@ -205,6 +232,15 @@ function formatTime(value: string) {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
 }
 
 /** Convert raw model IDs into human-friendly display names */
@@ -392,7 +428,9 @@ export default function App() {
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const messageTimelineRef = useRef<HTMLDivElement>(null);
   const terminalOutputRef = useRef<HTMLPreElement>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
@@ -496,7 +534,8 @@ export default function App() {
     totalOutputTokens: number;
     totalTokens: number;
     requestCount: number;
-  }>({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+    estimatedContextTokens: number; // Total tokens in conversation including input/output
+  }>({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
 
   // Provider-level usage / quota tracking
   const [providerUsage, setProviderUsage] = useState<Array<{
@@ -507,6 +546,9 @@ export default function App() {
     hasQuota: boolean;
   }>>([]);
   const providerUsageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Model context limits from server
+  const [modelContextLimits, setModelContextLimits] = useState<Record<string, number>>({});
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     const password = localStorage.getItem("ac:webPassword") || "";
@@ -566,6 +608,18 @@ export default function App() {
       if (providerUsageTimerRef.current) clearInterval(providerUsageTimerRef.current);
     };
   }, [fetchProviderUsage]);
+
+  // Close model dropdown when clicking outside
+  useEffect(() => {
+    if (!showModelDropdown) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
+        setShowModelDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showModelDropdown]);
 
   /** Connect to SSE stream for a session. Call this after sending a message. */
   const connectStream = useCallback((sessionId: string) => {
@@ -652,6 +706,8 @@ export default function App() {
               totalOutputTokens: prev.totalOutputTokens + data.usage!.outputTokens,
               totalTokens: prev.totalTokens + data.usage!.totalTokens,
               requestCount: prev.requestCount + 1,
+              // Context = total tokens in conversation (input + output so far)
+              estimatedContextTokens: prev.estimatedContextTokens + data.usage!.totalTokens,
             }));
           } else {
             // Even without usage data, increment request count
@@ -1066,6 +1122,15 @@ export default function App() {
     if (payload.providers[0]) {
       setProvider((current) => current || payload.providers[0]!.label);
       setModel((current) => current || payload.providers[0]!.model);
+      
+      // Collect context limits from all providers
+      const allLimits: Record<string, number> = {};
+      for (const p of payload.providers) {
+        if (p.modelContextLimits) {
+          Object.assign(allLimits, p.modelContextLimits);
+        }
+      }
+      setModelContextLimits(allLimits);
     }
 
     setExpandedGroups((current) => {
@@ -1292,6 +1357,20 @@ export default function App() {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [sessionDetail?.messages.length, streamingContent]);
 
+  // Track scroll position to show/hide scroll-to-bottom button
+  useEffect(() => {
+    const timeline = messageTimelineRef.current;
+    if (!timeline) return;
+    function handleScroll() {
+      const { scrollTop, scrollHeight, clientHeight } = timeline;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+      setShowScrollButton(!isAtBottom);
+    }
+    timeline.addEventListener("scroll", handleScroll);
+    handleScroll();
+    return () => timeline.removeEventListener("scroll", handleScroll);
+  }, [sessionDetail?.messages.length]);
+
   // GitHub OAuth polling — uses setTimeout chain (not setInterval) to respect dynamic intervals
   const pollIntervalRef = useRef(5000);
 
@@ -1460,7 +1539,7 @@ export default function App() {
         setSessionDetail(payload);
         userClearedSessionRef.current = false;
         // Reset usage tracking for new session
-        setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+        setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
         // Connect to SSE stream for real-time token delivery
         connectStream(payload.id);
       } else {
@@ -1495,7 +1574,7 @@ export default function App() {
     setActiveSessionId("");
     setSessionDetail(null);
     setPrompt("");
-    setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+    setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
   }
 
   async function handleDeleteSession(sessionId: string) {
@@ -1635,7 +1714,7 @@ export default function App() {
       setTerminalRuns([]);
 
       // Reset usage tracking for the new project
-      setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0 });
+      setSessionUsage({ totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0, requestCount: 0, estimatedContextTokens: 0 });
 
       // Close autocomplete if open
       setAutocompleteType(null);
@@ -1930,7 +2009,7 @@ export default function App() {
               <Panel minSize={30}>
                 <div className="session-view">
                   {/* Message timeline */}
-                  <div className="message-timeline compact-scroll">
+                  <div className="message-timeline compact-scroll" ref={messageTimelineRef}>
                     {sessionDetail ? (
                       <>
                         {checkpointPairs.map((pair, pairIdx) => {
@@ -1950,45 +2029,50 @@ export default function App() {
                           const allToolCalls = assistantMessages.flatMap((m) => m.toolCalls || []);
                           // The final assistant message with actual content
                           const finalAssistant = [...assistantMessages].reverse().find((m) => m.content.trim());
+                          // Calculate response time
+                          const responseDuration = finalAssistant ? new Date(finalAssistant.createdAt).getTime() - new Date(pair.userMessage.createdAt).getTime() : null;
 
                           return (
                             <div key={pair.userMessage.id} className="checkpoint-pair">
                               {/* User message */}
                               <article className="message-turn user">
-                                <div className="message-meta">
-                                  <span>user</span>
-                                  <span>{formatTime(pair.userMessage.createdAt)}</span>
-                                  <div className="message-actions">
-                                    <button
-                                      className="message-action-btn"
-                                      type="button"
-                                      title="Copy message"
-                                      onClick={() => {
-                                        void navigator.clipboard.writeText(pair.userMessage.content);
-                                      }}
-                                    >
-                                      <Copy size={12} />
-                                    </button>
-                                    <button
-                                      className="message-action-btn"
-                                      type="button"
-                                      title="Restore checkpoint — revert file changes and edit prompt"
-                                      onClick={() => void handleRestoreCheckpoint(pair.userMessage.id)}
-                                    >
-                                      <RotateCcw size={12} />
-                                    </button>
-                                    <button
-                                      className="message-action-btn"
-                                      type="button"
-                                      title="Delete this turn"
-                                      onClick={() => void handleDeletePair(pair.userMessage.id)}
-                                    >
-                                      <Trash2 size={12} />
-                                    </button>
-                                  </div>
-                                </div>
                                 <div className="message-content">
                                   <pre>{pair.userMessage.content}</pre>
+                                </div>
+                                <div className="message-meta message-meta-footer">
+                                  <div className="message-meta-row">
+                                    <span className="message-mode">{mode}</span>
+                                    <span className="message-time">{formatTime(pair.userMessage.createdAt)}</span>
+                                    <span className="message-info">{prettifyModelId(sessionDetail.model)}</span>
+                                    <div className="message-actions-inline">
+                                      <button
+                                        className="message-action-btn"
+                                        type="button"
+                                        title="Fork to new session"
+                                        onClick={() => void handleForkSession(pair.userMessage.id)}
+                                      >
+                                        <GitBranch size={12} />
+                                      </button>
+                                      <button
+                                        className="message-action-btn"
+                                        type="button"
+                                        title="Restore checkpoint — revert file changes and edit prompt"
+                                        onClick={() => void handleRestoreCheckpoint(pair.userMessage.id)}
+                                      >
+                                        <RotateCcw size={12} />
+                                      </button>
+                                      <button
+                                        className="message-action-btn"
+                                        type="button"
+                                        title="Copy message"
+                                        onClick={() => {
+                                          void navigator.clipboard.writeText(pair.userMessage.content);
+                                        }}
+                                      >
+                                        <Copy size={12} />
+                                      </button>
+                                    </div>
+                                  </div>
                                 </div>
                               </article>
 
@@ -2038,22 +2122,6 @@ export default function App() {
                               {/* Final assistant text content */}
                               {finalAssistant && finalAssistant.content && (
                                 <article className="message-turn assistant">
-                                  <div className="message-meta">
-                                    <span>assistant</span>
-                                    <span>{formatTime(finalAssistant.createdAt)}</span>
-                                    <div className="message-actions">
-                                      <button
-                                        className="message-action-btn"
-                                        type="button"
-                                        title="Copy message"
-                                        onClick={() => {
-                                          void navigator.clipboard.writeText(finalAssistant.content);
-                                        }}
-                                      >
-                                        <Copy size={12} />
-                                      </button>
-                                    </div>
-                                  </div>
                                   <div className="message-content">
                                     <ReactMarkdown
                                       remarkPlugins={[remarkGfm]}
@@ -2078,6 +2146,22 @@ export default function App() {
                                         },
                                       }}
                                     >{finalAssistant.content}</ReactMarkdown>
+                                  </div>
+                                  <div className="message-meta message-meta-footer">
+                                    <button
+                                      className="message-action-btn"
+                                      type="button"
+                                      title="Copy message"
+                                      onClick={() => {
+                                        void navigator.clipboard.writeText(finalAssistant.content);
+                                      }}
+                                    >
+                                      <Copy size={12} />
+                                    </button>
+                                    <span className="message-mode">{mode}</span>
+                                    <span className="message-time">{formatTime(finalAssistant.createdAt)}</span>
+                                    <span className="message-info">{prettifyModelId(sessionDetail.model)}</span>
+                                    {responseDuration && <span className="message-duration">{formatDuration(responseDuration)}</span>}
                                   </div>
                                 </article>
                               )}
@@ -2222,6 +2306,17 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                  {showScrollButton && sessionDetail && (
+                    <button
+                      className="scroll-to-bottom-btn"
+                      type="button"
+                      onClick={() => messageEndRef.current?.scrollIntoView({ behavior: "smooth" })}
+                      title="Scroll to bottom"
+                    >
+                      <ChevronDown size={16} />
+                    </button>
+                  )}
 
                   {null}
 
@@ -2376,45 +2471,6 @@ export default function App() {
                     </div>
                     <div className="dock-tray">
                       <div className="dock-tray-selectors">
-                        {/* Provider selector */}
-                        <div className="dock-dropdown" ref={providerDropdownRef}>
-                          <button
-                            className="dock-dropdown-trigger"
-                            type="button"
-                            onClick={() => { setShowProviderDropdown(!showProviderDropdown); setShowModelDropdown(false); }}
-                          >
-                            <span>{provider || "Select provider"}</span>
-                            <ChevronDown size={12} />
-                          </button>
-                          {showProviderDropdown && (
-                            <div className="dock-dropdown-menu">
-                              {(snapshot?.providers ?? []).filter((p) => p.status === "connected").map((p) => (
-                                <button
-                                  key={p.id}
-                                  className={`dock-dropdown-item${provider === p.label ? " active" : ""}`}
-                                  type="button"
-                                  onClick={() => {
-                                    setProvider(p.label);
-                                    localStorage.setItem("ac:provider", p.label);
-                                    const enabled = (p.models ?? []).filter((m) => !disabledModels[m]);
-                                    const firstEnabled = enabled[0] || "";
-                                    if (firstEnabled) {
-                                      setModel(firstEnabled);
-                                      localStorage.setItem("ac:model", firstEnabled);
-                                    }
-                                    setShowProviderDropdown(false);
-                                  }}
-                                >
-                                  {p.label}
-                                  {p.status === "disconnected" && <span className="dock-dropdown-badge">No key</span>}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        <span className="dock-tray-sep">/</span>
-
                         {/* Mode selector - Plan/Build */}
                         <div className="dock-dropdown">
                           <button
@@ -2442,18 +2498,18 @@ export default function App() {
 
                         <span className="dock-tray-sep">/</span>
 
-                        {/* Model selector with search */}
+                        {/* Unified Model/Provider selector with categories */}
                         <div className="dock-dropdown" ref={modelDropdownRef}>
                           <button
                             className="dock-dropdown-trigger"
                             type="button"
-                            onClick={() => { setShowModelDropdown(!showModelDropdown); setShowProviderDropdown(false); setModelSearchQuery(""); }}
+                            onClick={() => { setShowModelDropdown(!showModelDropdown); setModelSearchQuery(""); }}
                           >
-                            <span>{prettifyModelId(model) || "Select model"}</span>
+                            <span>{provider && model ? `${provider}: ${prettifyModelId(model)}` : "Select model"}</span>
                             <ChevronDown size={12} />
                           </button>
                           {showModelDropdown && (
-                            <div className="dock-dropdown-menu model-menu">
+                            <div className="dock-dropdown-menu model-menu unified-model-menu">
                               <div className="dock-dropdown-search">
                                 <Search size={12} />
                                 <input
@@ -2466,27 +2522,58 @@ export default function App() {
                               </div>
                               <div className="dock-dropdown-items">
                                 {(() => {
-                                  const p = snapshot?.providers.find((p) => p.label === provider);
-                                  const all = (p?.models ?? []).filter((m) => !disabledModels[m]);
-                                  const filtered = modelSearchQuery
-                                    ? all.filter((m) => m.toLowerCase().includes(modelSearchQuery.toLowerCase()))
-                                    : all;
-                                  return filtered.length > 0 ? filtered.map((m) => (
-                                    <button
-                                      key={m}
-                                      className={`dock-dropdown-item${model === m ? " active" : ""}`}
-                                      type="button"
-                                      onClick={() => {
-                                        setModel(m);
-                                        localStorage.setItem("ac:model", m);
-                                        setShowModelDropdown(false);
-                                      }}
-                                    >
-                                      {prettifyModelId(m)}
-                                    </button>
-                                  )) : (
-                                    <div className="dock-dropdown-empty">No models found</div>
+                                  // Group models by provider
+                                  const connectedProviders = (snapshot?.providers ?? []).filter((p) => p.status === "connected");
+                                  const allModelsWithProvider = connectedProviders.flatMap((p) => 
+                                    (p.models ?? [])
+                                      .filter((m) => !disabledModels[m])
+                                      .map((m) => ({ model: m, provider: p.label, providerId: p.id }))
                                   );
+                                  const filtered = modelSearchQuery
+                                    ? allModelsWithProvider.filter((item) => 
+                                        item.model.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+                                        item.provider.toLowerCase().includes(modelSearchQuery.toLowerCase())
+                                      )
+                                    : allModelsWithProvider;
+                                  
+                                  if (filtered.length === 0) {
+                                    return <div className="dock-dropdown-empty">No models found</div>;
+                                  }
+                                  
+                                  // Group by provider for display
+                                  const groupedByProvider: Record<string, typeof filtered> = {};
+                                  filtered.forEach((item) => {
+                                    if (!groupedByProvider[item.provider]) {
+                                      groupedByProvider[item.provider] = [];
+                                    }
+                                    groupedByProvider[item.provider].push(item);
+                                  });
+                                  
+                                  return Object.entries(groupedByProvider).map(([providerName, items]) => (
+                                    <div key={providerName} className="dock-dropdown-group">
+                                      <div className="dock-dropdown-group-header">{providerName}</div>
+                                      {items.map((item) => {
+                                        const contextLabel = getModelContextLabel(item.model, modelContextLimits);
+                                        return (
+                                          <button
+                                            key={item.model}
+                                            className={`dock-dropdown-item${model === item.model && provider === item.provider ? " active" : ""}`}
+                                            type="button"
+                                            onClick={() => {
+                                              setModel(item.model);
+                                              setProvider(item.provider);
+                                              localStorage.setItem("ac:model", item.model);
+                                              localStorage.setItem("ac:provider", item.provider);
+                                              setShowModelDropdown(false);
+                                            }}
+                                          >
+                                            <span>{prettifyModelId(item.model)}</span>
+                                            {contextLabel && <span className="dock-dropdown-context-badge">{contextLabel}</span>}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  ));
                                 })()}
                               </div>
                             </div>
@@ -2500,9 +2587,17 @@ export default function App() {
                         const hasUsage = usage && usage.usageLabel !== "No usage yet" && usage.usageLabel !== "No API key" && usage.usageLabel !== "Error fetching";
                         const barPercent = usage?.usagePercent ?? 0;
                         const barColor = barPercent > 80 ? "var(--color-error)" : barPercent > 50 ? "#e8a832" : "var(--color-success)";
+                        
+                        // Context window tracking - use server-provided limits first
+                        const modelMaxContext = getModelContextLimit(model, modelContextLimits);
+                        const contextUsed = sessionUsage.estimatedContextTokens;
+                        const contextPercent = modelMaxContext > 0 ? Math.min((contextUsed / modelMaxContext) * 100, 100) : 0;
+                        const contextColor = contextPercent > 85 ? "var(--color-error)" : contextPercent > 60 ? "#e8a832" : "var(--color-success)";
+                        const contextRemaining = Math.max(0, modelMaxContext - contextUsed);
 
                         return (
                           <div className="dock-tray-usage">
+                            {/* Provider quota usage (API billing) */}
                             {hasUsage ? (
                               <div className="dock-tray-context" title={usage.details}>
                                 {usage.usagePercent !== null ? (
@@ -2519,6 +2614,17 @@ export default function App() {
                             ) : (
                               <span className="dock-tray-context-label">{usage?.usageLabel || "Not connected"}</span>
                             )}
+                            
+                            {/* Session context window tracking */}
+                            {sessionDetail && contextUsed > 0 && (
+                              <div className="dock-tray-session-context" title={`Context window: ${formatTokens(contextUsed)} / ${formatTokens(modelMaxContext)}\nRemaining: ${formatTokens(contextRemaining)}`}>
+                                <div className="context-bar">
+                                  <div className="context-bar-fill" style={{ width: `${contextPercent}%`, backgroundColor: contextColor }} />
+                                </div>
+                                <span className="context-bar-label">{formatTokens(contextUsed)} / {formatTokens(modelMaxContext)}</span>
+                              </div>
+                            )}
+                            
                             {sessionDetail ? (
                               <span className="dock-tray-requests" title={`${sessionUsage.requestCount} AI request${sessionUsage.requestCount !== 1 ? "s" : ""} in this session\n${sessionUsage.totalTokens > 0 ? `Tokens: ${formatTokens(sessionUsage.totalInputTokens)} in / ${formatTokens(sessionUsage.totalOutputTokens)} out (${formatTokens(sessionUsage.totalTokens)} total)` : ""}`}>
                                 <Zap size={11} />
@@ -3019,212 +3125,50 @@ export default function App() {
               {/* --- Model Toggles Section --- */}
               <div className="overlay-section">
                 <h3 className="overlay-section-title">Models</h3>
-                <p className="overlay-section-desc">Enable or disable models per provider. Only enabled models appear in the model dropdown.</p>
-                {(snapshot?.providers ?? []).map((prov) => (
-                  <div key={prov.id} className="model-toggle-group">
-                    <div className="model-toggle-provider">{prov.label}</div>
-                    {(prov.models ?? []).map((m) => {
-                      const isOff = disabledModels[m] === true;
-                      return (
-                        <label key={m} className="model-toggle-row">
-                          <span className="model-toggle-name" title={m}>{prettifyModelId(m)}</span>
-                          <span className="model-toggle-raw">{m}</span>
-                          <button
-                            type="button"
-                            className={`model-toggle-switch${isOff ? "" : " on"}`}
-                            onClick={() => setDisabledModels((prev) => ({ ...prev, [m]: !isOff }))}
-                          >
-                            <span className="model-toggle-knob" />
-                          </button>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-
-              {/* --- Environment Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Environment</h3>
-                <div className="setting-row">
-                  <span>Server</span>
-                  <strong>{serverUrl}</strong>
-                </div>
-                <div className="setting-row">
-                  <span>Workspace</span>
-                  <strong>{snapshot?.workspace.root}</strong>
-                </div>
-                <div className="setting-row">
-                  <span>Desktop shell</span>
-                  <strong>Electron</strong>
-                </div>
-              </div>
-
-              {/* --- CI Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">CI</h3>
-                <p className="overlay-section-desc">Detected CI context from environment variables.</p>
-                <div className="setting-row">
-                  <span>Provider</span>
-                  <strong>{ciContext?.provider ?? "unknown"}</strong>
-                </div>
-                {ciContext?.projectPath ? (
-                  <div className="setting-row">
-                    <span>Project</span>
-                    <strong>{ciContext.projectPath}</strong>
-                  </div>
-                ) : null}
-                {ciContext?.pipelineId ? (
-                  <div className="setting-row">
-                    <span>Pipeline</span>
-                    <strong>{ciContext.pipelineId}</strong>
-                  </div>
-                ) : null}
-                {ciContext?.jobId ? (
-                  <div className="setting-row">
-                    <span>Job</span>
-                    <strong>{ciContext.jobId}</strong>
-                  </div>
-                ) : null}
-                {ciContext?.branch ? (
-                  <div className="setting-row">
-                    <span>Branch</span>
-                    <strong>{ciContext.branch}</strong>
-                  </div>
-                ) : null}
-                {ciContext?.mergeRequestIid ? (
-                  <div className="setting-row">
-                    <span>Merge Request</span>
-                    <strong>!{ciContext.mergeRequestIid}</strong>
-                  </div>
-                ) : null}
-              </div>
-
-              {/* --- Access Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Access</h3>
-                <p className="overlay-section-desc">If a server password is enabled, enter it here.</p>
-                <div className="auth-key-input-row">
-                  <div className="auth-key-input-wrap">
-                    <Key size={12} className="auth-key-icon" />
-                    <input
-                      type="password"
-                      value={webPassword}
-                      onChange={(e) => {
-                        setWebPassword(e.target.value);
-                        localStorage.setItem("ac:webPassword", e.target.value);
-                      }}
-                      placeholder="Server password"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* --- Config Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Config</h3>
-                <p className="overlay-section-desc">Resolved from global + project config files (JSONC).</p>
-                <div className="setting-row">
-                  <span>Global</span>
-                  <strong>{snapshot?.configPaths?.globalPath ?? "—"}</strong>
-                </div>
-                <div className="setting-row">
-                  <span>Project</span>
-                  <strong>{snapshot?.configPaths?.projectPath ?? "—"}</strong>
-                </div>
-                <div className="setting-row">
-                  <button className="auth-save-btn" type="button" onClick={() => void reloadConfig()}>
-                    <RotateCcw size={12} />
-                    <span>Reload config</span>
-                  </button>
-                </div>
-                <pre className="config-json">
-                  {JSON.stringify(snapshot?.config ?? {}, null, 2)}
-                </pre>
-              </div>
-
-              {/* --- Skills Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Skills</h3>
-                <p className="overlay-section-desc">
-                  Skills discovered from standard locations and configured paths.
-                </p>
-                {skills.length === 0 ? (
-                  <div className="empty-inline">No skills found</div>
+                <p className="overlay-section-desc">Enable or disable models. Only enabled models appear in the dropdown.</p>
+                
+                {/* Grouped model list by provider - only show connected providers */}
+                {(snapshot?.providers ?? []).filter(p => p.status === "connected").length === 0 ? (
+                  <p className="overlay-section-desc" style={{ color: "var(--text-weak)", fontStyle: "italic" }}>
+                    Connect a provider above to see available models.
+                  </p>
                 ) : (
-                  <div className="skills-list">
-                    {skills.map((skill) => (
-                      <button
-                        key={skill.id}
-                        className={`skills-row${activeSkill?.id === skill.id ? " active" : ""}`}
-                        type="button"
-                        onClick={() => void openSkill(skill)}
-                      >
-                        <span>{skill.name}</span>
-                        <small>{skill.path}</small>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {activeSkill ? (
-                  <div className="skill-preview">
-                    <div className="skill-preview-header">
-                      <strong>{activeSkill.name}</strong>
-                      <small>{activeSkill.path}</small>
-                    </div>
-                    {skillLoading ? (
-                      <div className="empty-inline">Loading...</div>
-                    ) : (
-                      <pre className="skill-preview-body">{skillContent}</pre>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-
-              {/* --- Agents Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Agents</h3>
-                <p className="overlay-section-desc">Switch the system focus for this session.</p>
-                {agents.length === 0 ? (
-                  <div className="empty-inline">No agents available</div>
-                ) : (
-                  <div className="agents-list">
-                    {agents.map((agent) => (
-                      <button
-                        key={agent.id}
-                        className={`agents-row${activeAgentId === agent.id ? " active" : ""}`}
-                        type="button"
-                        onClick={() => void switchAgent(agent.id)}
-                      >
-                        <span>{agent.label}</span>
-                        <small>{agent.description ?? agent.id}</small>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* --- Plugins Section --- */}
-              <div className="overlay-section">
-                <h3 className="overlay-section-title">Plugins</h3>
-                <p className="overlay-section-desc">Local plugins loaded from configured directories.</p>
-                <div className="setting-row">
-                  <button className="auth-save-btn" type="button" onClick={() => void reloadPlugins()}>
-                    <RotateCcw size={12} />
-                    <span>Reload plugins</span>
-                  </button>
-                </div>
-                {plugins.length === 0 ? (
-                  <div className="empty-inline">No plugins loaded</div>
-                ) : (
-                  <div className="plugins-list">
-                    {plugins.map((plugin) => (
-                      <div key={plugin.id} className="plugins-row">
-                        <span>{plugin.label}</span>
-                        <small>{plugin.version ?? plugin.id}</small>
+                  <div className="models-categorized">
+                    {(snapshot?.providers ?? []).filter(p => p.status === "connected").map((prov) => (
+                    <div key={prov.id} className="models-category">
+                      <div className="models-category-header">
+                        <span className={`auth-status-dot ${prov.status === "connected" ? "connected" : "disconnected"}`} />
+                        <strong>{prov.label}</strong>
+                        <span className="models-count">{(prov.models ?? []).filter(m => !disabledModels[m]).length} / {prov.models?.length ?? 0}</span>
                       </div>
-                    ))}
-                  </div>
+                      <div className="models-category-list">
+                        {(prov.models ?? []).map((m) => {
+                          const isOff = disabledModels[m] === true;
+                          const contextLabel = getModelContextLabel(m, modelContextLimits);
+                          return (
+                            <label key={m} className="model-toggle-item">
+                              <input
+                                type="checkbox"
+                                checked={!isOff}
+                                onChange={() => setDisabledModels((prev) => {
+                                  const next = { ...prev };
+                                  if (isOff) {
+                                    delete next[m];
+                                  } else {
+                                    next[m] = true;
+                                  }
+                                  return next;
+                                })}
+                              />
+                              <span className="model-name">{prettifyModelId(m)}</span>
+                              {contextLabel && <span className="model-context">{contextLabel}</span>}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 )}
               </div>
             </div>

@@ -7,13 +7,64 @@
   "scripts": {
     "dev": "pnpm build && electron dist/main.js",
     "build": "tsc -p tsconfig.json",
+    "build:web": "pnpm --filter @alpha-code/web build",
+    "build:server": "pnpm --filter @alpha-code/server build",
+    "build:all": "pnpm build:web && pnpm build:server && pnpm build",
     "start": "electron dist/main.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dist": "pnpm build:all && electron-builder",
+    "dist:mac": "pnpm build:all && electron-builder --mac",
+    "dist:win": "pnpm build:all && electron-builder --win",
+    "dist:linux": "pnpm build:all && electron-builder --linux"
   },
   "dependencies": {
     "electron": "^36.5.0"
   },
   "devDependencies": {
+    "electron-builder": "^26.0.0",
     "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.alphacode.app",
+    "productName": "Alpha Code",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "../../web/dist/**/*",
+      "../../server/dist/**/*"
+    ],
+    "extraMetadata": {
+      "main": "dist/main.js"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "build/icon.icns"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

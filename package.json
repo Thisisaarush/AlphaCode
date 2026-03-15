@@ -16,8 +16,13 @@
     "dev:server": "pnpm --filter @alpha-code/server dev",
     "dev:desktop": "pnpm --filter @alpha-code/desktop dev",
     "build": "turbo build",
+    "build:all": "pnpm --filter @alpha-code/web build && pnpm --filter @alpha-code/server build && pnpm --filter @alpha-code/desktop build",
     "typecheck": "turbo typecheck",
     "desktop:build": "pnpm --filter @alpha-code/desktop build",
+    "dist": "pnpm --filter @alpha-code/desktop dist",
+    "dist:mac": "pnpm --filter @alpha-code/desktop dist:mac",
+    "dist:win": "pnpm --filter @alpha-code/desktop dist:win",
+    "dist:linux": "pnpm --filter @alpha-code/desktop dist:linux",
     "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
     "format": "prettier --write \"**/*.{ts,tsx,css,html,json,md,yaml,yml}\""
   },

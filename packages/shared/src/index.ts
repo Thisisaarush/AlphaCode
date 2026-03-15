@@ -202,7 +202,8 @@ export const workspaceSnapshotSchema = z.object({
       status: providerStatusSchema,
       model: z.string(),
       models: z.array(z.string()).optional(),
-      method: authMethodSchema.optional()
+      method: authMethodSchema.optional(),
+      modelContextLimits: z.record(z.string(), z.number()).optional()
     })
   )
 });
