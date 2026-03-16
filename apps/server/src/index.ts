@@ -2876,6 +2876,48 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url === "/api/git/status") {
+      try {
+        const statusRaw = execSync("git status --porcelain", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+        
+        const modified: string[] = [];
+        const staged: string[] = [];
+        const untracked: string[] = [];
+        
+        if (statusRaw) {
+          const lines = statusRaw.split("\n").filter(Boolean);
+          for (const line of lines) {
+            if (line.length >= 3) {
+              const status = line.substring(0, 2);
+              const path = line.substring(3).trim();
+              
+              const stagedStatus = status[0];
+              const workTreeStatus = status[1] || stagedStatus;
+              
+              if (stagedStatus === "?" || workTreeStatus === "?") {
+                untracked.push(path);
+              } else if (stagedStatus === "A" || stagedStatus === "M" || stagedStatus === "D" || stagedStatus === "R") {
+                staged.push(path);
+              } else if (workTreeStatus === "M" || workTreeStatus === "D") {
+                modified.push(path);
+              } else {
+                modified.push(path);
+              }
+            }
+          }
+        }
+
+        sendJson(response, 200, {
+          modified,
+          staged,
+          untracked,
+        });
+      } catch (err) {
+        sendJson(response, 500, { error: "Not a git repository or git not available" });
+      }
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/git/checkout") {
       try {
         const body = await readJsonBody(request) as { branch: string };
@@ -2906,6 +2948,28 @@ const server = createServer(async (request, response) => {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         sendJson(response, 400, { error: `Checkout failed: ${message}` });
+      }
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/git/revert") {
+      try {
+        const body = await readJsonBody(request) as { path: string };
+        if (!body.path || typeof body.path !== "string") {
+          sendJson(response, 400, { error: "Missing file path" });
+          return;
+        }
+        const safeFile = body.path.replace(/[^a-zA-Z0-9._\-\/]/g, "");
+        if (!safeFile) {
+          sendJson(response, 400, { error: "Invalid file path" });
+          return;
+        }
+
+        execSync(`git checkout HEAD -- "${safeFile}"`, { cwd: workspaceRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+        
+        sendJson(response, 200, { success: true, file: safeFile });
+      } catch (err) {
+        sendJson(response, 500, { error: "Failed to revert file" });
       }
       return;
     }

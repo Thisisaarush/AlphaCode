@@ -478,6 +478,11 @@ export default function App() {
   );
   const [ciContext, setCiContext] = useState<CiContext | null>(null);
   const [showRightPanel, setShowRightPanel] = useState(false);
+  const [showCompareView, setShowCompareView] = useState(false);
+  const [compareFile, setCompareFile] = useState<FileItem | null>(null);
+  const [compareContent, setCompareContent] = useState<{ original: string; modified: string } | null>(null);
+  const [compareDiff, setCompareDiff] = useState<Array<{ type: "same" | "added" | "removed"; content: string }>>([]);
+  const [compareMode, setCompareMode] = useState<"inline" | "split">("inline");
   const [showTerminal, setShowTerminal] = useState(false);
   const [showLeftPanel, setShowLeftPanel] = useState(true);
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
@@ -562,6 +567,11 @@ export default function App() {
   const [newBranchName, setNewBranchName] = useState("");
   const [branchLoading, setBranchLoading] = useState(false);
   const [branchError, setBranchError] = useState("");
+  const [gitStatus, setGitStatus] = useState<{
+    modified: string[];
+    staged: string[];
+    untracked: string[];
+  } | null>(null);
   const branchFilterRef = useRef<HTMLInputElement>(null);
 
   // Project switcher state
@@ -1312,6 +1322,10 @@ export default function App() {
       setActiveSessionId(payload.sessions[0].id);
     }
 
+    // Log changed files for debugging
+    console.log("Files loaded:", payload.workspace.files.length);
+    console.log("Drafts:", drafts);
+
     if (payload.providers[0]) {
       setProvider((current) => current || payload.providers[0]!.label);
       setModel((current) => current || payload.providers[0]!.model);
@@ -1324,6 +1338,17 @@ export default function App() {
         }
       }
       setModelContextLimits(allLimits);
+    }
+
+    // Load git status
+    try {
+      const status = await fetchJson<{ modified: string[]; staged: string[]; untracked: string[] }>(
+        `${serverUrl}/api/git/status`,
+      );
+      setGitStatus(status);
+    } catch (err) {
+      // Git status not available, use drafts as fallback
+      setGitStatus(null);
     }
 
     setExpandedGroups((current) => {
@@ -1648,13 +1673,17 @@ export default function App() {
     () => filterTree(fileTree, treeFilter.trim()),
     [fileTree, treeFilter],
   );
-  const changedFiles = useMemo(
-    () =>
-      files.filter(
-        (file) => (drafts[file.id] ?? file.content) !== file.content,
-      ),
-    [drafts, files],
-  );
+  const changedFiles = useMemo(() => {
+    // Use git status if available
+    if (gitStatus) {
+      const allChanged = [...gitStatus.modified, ...gitStatus.staged, ...gitStatus.untracked];
+      return files.filter((file) => allChanged.includes(file.path));
+    }
+    // Fallback to local drafts
+    return files.filter(
+      (file) => (drafts[file.id] ?? file.content) !== file.content,
+    );
+  }, [gitStatus, drafts, files]);
   const filteredFiles = useMemo(() => {
     if (!searchQuery.trim()) {
       return files;
@@ -1737,6 +1766,93 @@ export default function App() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleShowCompare(file: FileItem) {
+    console.log("handleShowCompare called", file);
+    setCompareFile(file);
+    setShowCompareView(true);
+
+    const originalContent = file.content;
+    const modifiedContent = drafts[file.id] ?? file.content;
+
+    try {
+      const diff = await fetchJson<{ original: string; modified: string }>(
+        `${serverUrl}/api/git/diff`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: file.path }),
+        },
+      );
+      setCompareContent(diff);
+      setCompareDiff(computeSimpleDiff(diff.original, diff.modified));
+    } catch (err) {
+      setCompareContent({ original: originalContent, modified: modifiedContent });
+      setCompareDiff(computeSimpleDiff(originalContent, modifiedContent));
+    }
+  }
+
+  function computeSimpleDiff(original: string, modified: string): Array<{ type: "same" | "added" | "removed"; content: string }> {
+    const originalLines = original.split("\n");
+    const modifiedLines = modified.split("\n");
+    const result: Array<{ type: "same" | "added" | "removed"; content: string }> = [];
+
+    // Simple line-by-line diff
+    const maxLines = Math.max(originalLines.length, modifiedLines.length);
+    let origIdx = 0;
+    let modIdx = 0;
+
+    while (origIdx < originalLines.length || modIdx < modifiedLines.length) {
+      const origLine = originalLines[origIdx];
+      const modLine = modifiedLines[modIdx];
+
+      if (origLine === modLine) {
+        result.push({ type: "same", content: origLine ?? "" });
+        origIdx++;
+        modIdx++;
+      } else if (origIdx < originalLines.length && !modifiedLines.includes(origLine)) {
+        result.push({ type: "removed", content: origLine ?? "" });
+        origIdx++;
+      } else if (modIdx < modifiedLines.length && !originalLines.includes(modLine)) {
+        result.push({ type: "added", content: modLine ?? "" });
+        modIdx++;
+      } else {
+        // Fallback: show both lines
+        if (origLine !== undefined) {
+          result.push({ type: "removed", content: origLine });
+          origIdx++;
+        }
+        if (modLine !== undefined) {
+          result.push({ type: "added", content: modLine });
+          modIdx++;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  async function handleRevertFile(file: FileItem) {
+    try {
+      await fetchJson(`${serverUrl}/api/git/revert`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: file.path }),
+      });
+      await loadWorkspace();
+    } catch (err) {
+      // Fallback: just reset the draft to original content
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[file.id];
+        return next;
+      });
+      setShowCompareView(false);
+      setCompareFile(null);
+      setCompareContent(null);
+      setCompareDiff([]);
     }
   }
 
@@ -2288,15 +2404,33 @@ export default function App() {
                       <div className="empty-inline">No unsaved changes</div>
                     ) : (
                       changedFiles.map((file) => (
-                        <button
-                          key={file.id}
-                          className="change-card"
-                          type="button"
-                          onClick={() => openFile(file.id)}
+                        <div 
+                          key={file.id} 
+                          className="change-item"
+                          onClick={() => {
+                            console.log("Clicked file:", file);
+                            handleShowCompare(file);
+                          }}
                         >
-                          <FileDiff size={13} />
-                          <span>{file.path}</span>
-                        </button>
+                          <button
+                            className="change-card"
+                            type="button"
+                          >
+                            <span className="change-status modified">M</span>
+                            <span className="change-path">{file.path}</span>
+                          </button>
+                          <button
+                            className="change-revert-btn"
+                            type="button"
+                            title="Revert changes"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRevertFile(file);
+                            }}
+                          >
+                            <RotateCcw size={12} />
+                          </button>
+                        </div>
                       ))
                     )}
                   </div>
@@ -3434,8 +3568,132 @@ export default function App() {
             </PanelGroup>
           </Panel>
 
-          {/* Right panel: editor (toggled) */}
-          {showRightPanel ? (
+          {showCompareView && compareFile ? (
+            <>
+              <PanelResizeHandle className="resize-handle vertical" />
+              <Panel defaultSize={50} minSize={30} maxSize={80}>
+                <section className="right-panel">
+                  <div className="pane-header">
+                    <div>
+                      <span className="pane-kicker">Comparing</span>
+                      <h2>{compareFile.path}</h2>
+                    </div>
+                    <div className="compare-mode-toggle">
+                      <button
+                        className={`compare-mode-btn ${compareMode === "inline" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setCompareMode("inline")}
+                      >
+                        Inline
+                      </button>
+                      <button
+                        className={`compare-mode-btn ${compareMode === "split" ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setCompareMode("split")}
+                      >
+                        Split
+                      </button>
+                    </div>
+                    <button
+                      className="pane-button"
+                      type="button"
+                      onClick={() => {
+                        setShowCompareView(false);
+                        setCompareFile(null);
+                        setCompareContent(null);
+                        setCompareDiff([]);
+                      }}
+                    >
+                      <X size={12} />
+                      <span>Close</span>
+                    </button>
+                  </div>
+                  <div className={`compare-container ${compareMode === "split" ? "compare-split" : ""}`}>
+                    {compareMode === "inline" ? (
+                      <div className="compare-pane diff-view">
+                        <div className="diff-lines">
+                          {compareDiff.length > 0 ? (
+                            compareDiff.map((line, idx) => (
+                              <div
+                                key={idx}
+                                className={`diff-line diff-line-${line.type}`}
+                              >
+                                <span className="diff-marker">
+                                  {line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}
+                                </span>
+                                <span className="diff-content">{line.content}</span>
+                              </div>
+                            ))
+                          ) : (
+                            <pre className="compare-content">
+                              {compareContent?.original ?? compareFile?.content}
+                            </pre>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="compare-pane">
+                          <div className="compare-header">Original</div>
+                          <div className="diff-lines">
+                            {compareDiff.length > 0 ? (
+                              compareDiff.map((line, idx) => (
+                                <div
+                                  key={idx}
+                                  className={`diff-line diff-line-${line.type === "added" ? "removed" : line.type === "removed" ? "added" : "same"}`}
+                                >
+                                  <span className="diff-marker">
+                                    {line.type === "removed" ? "-" : line.type === "added" ? "+" : " "}
+                                  </span>
+                                  <span className="diff-content">{line.content}</span>
+                                </div>
+                              ))
+                            ) : (
+                              <pre className="compare-content">
+                                {compareContent?.original ?? compareFile?.content}
+                              </pre>
+                            )}
+                          </div>
+                        </div>
+                        <div className="compare-pane">
+                          <div className="compare-header">Modified</div>
+                          <div className="diff-lines">
+                            {compareDiff.length > 0 ? (
+                              compareDiff.map((line, idx) => (
+                                <div
+                                  key={idx}
+                                  className={`diff-line diff-line-${line.type}`}
+                                >
+                                  <span className="diff-marker">
+                                    {line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}
+                                  </span>
+                                  <span className="diff-content">{line.content}</span>
+                                </div>
+                              ))
+                            ) : (
+                              <pre className="compare-content">
+                                {compareContent?.modified ?? drafts[compareFile?.id ?? ""] ?? compareFile?.content}
+                              </pre>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <div className="context-footer">
+                    <button
+                      className="titlebar-action danger"
+                      type="button"
+                      onClick={() => handleRevertFile(compareFile)}
+                    >
+                      <RotateCcw size={13} />
+                      <span>Revert Changes</span>
+                    </button>
+                  </div>
+                </section>
+              </Panel>
+            </>
+          ) : showRightPanel ? (
             <>
               <PanelResizeHandle className="resize-handle vertical" />
               <Panel defaultSize={42} minSize={24} maxSize={64}>

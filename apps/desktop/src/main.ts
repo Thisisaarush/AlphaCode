@@ -13,22 +13,63 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createServer as createHttpServer, type Server } from "node:http"
 import { readFileSync, existsSync } from "node:fs"
+import electronUpdater from "electron-updater"
+import log from "electron-log"
+
+const { autoUpdater } = electronUpdater
+
+// Set app name before anything else
+app.setName("Alpha Code")
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const isDevelopment = !app.isPackaged
 const repoRoot = path.resolve(__dirname, "../../..")
-const nodeBinPath = process.env.PATH?.split(":").find(p => p.includes("node"))?.split("/bin")[0] + "/bin" || "/usr/local/bin"
+const nodeBinPath =
+  process.env.PATH?.split(":")
+    .find((p) => p.includes("node"))
+    ?.split("/bin")[0] + "/bin" || "/usr/local/bin"
 
 const APP_ID = "com.alphacode.app"
-const CURRENT_VERSION = app.getVersion()
+const CURRENT_VERSION = "0.1.0"
 const UPDATE_REPO = "Thisisaarush/AlphaCode"
 
 let serverProcess: ChildProcess | null = null
 let webProcess: ChildProcess | null = null
 let httpServer: Server | null = null
 let mainWindow: BrowserWindow | null = null
+
+// Configure electron-updater
+autoUpdater.autoDownload = false
+autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.logger = log
+
+autoUpdater.on("update-available", (info) => {
+  log.info("[update] Update available:", info.version)
+  mainWindow?.webContents.send("update-available", {
+    tag_name: `v${info.version}`,
+    name: info.version,
+    body: info.releaseNotes || "",
+    html_url: `https://github.com/${UPDATE_REPO}/releases/tag/v${info.version}`,
+    published_at: info.releaseDate,
+  })
+})
+
+autoUpdater.on("update-downloaded", (info) => {
+  log.info("[update] Update downloaded:", info.version)
+  mainWindow?.webContents.send("update-downloaded", {
+    tag_name: `v${info.version}`,
+    name: info.version,
+    body: "",
+    html_url: `https://github.com/${UPDATE_REPO}/releases/tag/v${info.version}`,
+    published_at: "",
+  })
+})
+
+autoUpdater.on("error", (error) => {
+  log.error("[update] Auto-updater error:", error)
+})
 
 interface GitHubRelease {
   tag_name: string
@@ -43,31 +84,26 @@ async function checkForUpdates(): Promise<{
   release?: GitHubRelease
 }> {
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "Alpha-Code-Desktop",
-        },
-      },
-    )
-
-    if (!response.ok) {
-      return { hasUpdate: false }
+    const result = await autoUpdater.checkForUpdates()
+    if (result?.updateInfo) {
+      const latestVersion = result.updateInfo.version
+      const hasUpdate = compareVersions(latestVersion, CURRENT_VERSION) > 0
+      return {
+        hasUpdate,
+        release: hasUpdate
+          ? {
+              tag_name: `v${latestVersion}`,
+              name: latestVersion,
+              body: result.updateInfo.releaseNotes?.toString() || "",
+              html_url: `https://github.com/${UPDATE_REPO}/releases/tag/v${latestVersion}`,
+              published_at: result.updateInfo.releaseDate || "",
+            }
+          : undefined,
+      }
     }
-
-    const release = (await response.json()) as GitHubRelease
-    const latestVersion = release.tag_name.replace(/^v/, "")
-
-    // Compare versions (simple comparison, may need semver for complex cases)
-    const hasUpdate =
-      latestVersion !== CURRENT_VERSION &&
-      compareVersions(latestVersion, CURRENT_VERSION) > 0
-
-    return { hasUpdate, release: hasUpdate ? release : undefined }
+    return { hasUpdate: false }
   } catch (error) {
-    console.error("[update] Failed to check for updates:", error)
+    log.error("[update] Failed to check for updates:", error)
     return { hasUpdate: false }
   }
 }
@@ -85,19 +121,72 @@ function compareVersions(v1: string, v2: string): number {
   return 0
 }
 
+function showUpdateDialog(release: GitHubRelease): void {
+  const version = release.tag_name.replace(/^v/, "")
+  dialog
+    .showMessageBox(mainWindow!, {
+      type: "info",
+      title: "Update Available",
+      message: `A new version (${version}) is available.`,
+      detail: `Alpha Code ${version} has been released. Would you like to download and install it now?`,
+      buttons: ["Install Now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    .then(async (result) => {
+      if (result.response === 0) {
+        try {
+          log.log("[update] Downloading update...")
+          await autoUpdater.downloadUpdate()
+          dialog
+            .showMessageBox(mainWindow!, {
+              type: "info",
+              title: "Update Ready",
+              message: "Update downloaded successfully.",
+              detail: "The application will restart to install the update.",
+              buttons: ["Restart Now"],
+              defaultId: 0,
+            })
+            .then(() => {
+              autoUpdater.quitAndInstall()
+            })
+        } catch (error) {
+          log.error("[update] Failed to download update:", error)
+          dialog.showMessageBox(mainWindow!, {
+            type: "error",
+            title: "Update Failed",
+            message: "Failed to download the update.",
+            detail: String(error),
+            buttons: ["OK"],
+          })
+        }
+      }
+    })
+}
+
 function createMenu() {
   const template: MenuItemConstructorOptions[] = [
     {
       label: "Alpha Code",
       submenu: [
-        { role: "about" },
+        {
+          label: "About Alpha Code",
+          click: () => {
+            dialog.showMessageBox(mainWindow!, {
+              type: "info",
+              title: "About Alpha Code",
+              message: "Alpha Code",
+              detail: `Version ${CURRENT_VERSION}\n\n`,
+            })
+          },
+        },
         { type: "separator" },
         {
           label: "Check for Updates...",
           click: async () => {
             const result = await checkForUpdates()
             if (result.hasUpdate && result.release) {
-              mainWindow?.webContents.send("update-available", result.release)
+              showUpdateDialog(result.release)
             } else {
               dialog.showMessageBox({
                 type: "info",
@@ -203,11 +292,11 @@ function startProcess(command: string, args: string[], name: string) {
   })
 
   child.on("error", (error) => {
-    console.error(`[${name}] process error:`, error.message)
+    log.error(`[${name}] process error:`, error.message)
   })
 
   child.on("exit", (code) => {
-    console.log(`[${name}] exited with code ${code}`)
+    log.log(`[${name}] exited with code ${code}`)
   })
 
   return child
@@ -221,41 +310,41 @@ async function ensureDevelopmentServices() {
   // Check if server is already running
   const serverAlreadyUp = await waitForUrl("http://127.0.0.1:3030/health", 2)
   if (!serverAlreadyUp) {
-    console.log("[desktop] Starting server...")
+    log.log("[desktop] Starting server...")
     serverProcess = startProcess(
       "pnpm",
       ["--filter", "@alpha-code/server", "dev"],
       "server",
     )
   } else {
-    console.log("[desktop] Server already running.")
+    log.log("[desktop] Server already running.")
   }
 
   // Check if web is already running
   const webAlreadyUp = await waitForUrl("http://127.0.0.1:3000", 2)
   if (!webAlreadyUp) {
-    console.log("[desktop] Starting web...")
+    log.log("[desktop] Starting web...")
     webProcess = startProcess(
       "pnpm",
       ["--filter", "@alpha-code/web", "dev"],
       "web",
     )
   } else {
-    console.log("[desktop] Web already running.")
+    log.log("[desktop] Web already running.")
   }
 
   // Wait for both to be ready (up to 30 seconds)
-  console.log("[desktop] Waiting for services to be ready...")
+  log.log("[desktop] Waiting for services to be ready...")
   const [nextServerReady, nextWebReady] = await Promise.all([
     serverAlreadyUp || waitForUrl("http://127.0.0.1:3030/health", 60),
     webAlreadyUp || waitForUrl("http://127.0.0.1:3000", 60),
   ])
 
   if (!nextServerReady) {
-    console.error("[desktop] Server failed to start within timeout.")
+    log.error("[desktop] Server failed to start within timeout.")
   }
   if (!nextWebReady) {
-    console.error("[desktop] Web failed to start within timeout.")
+    log.error("[desktop] Web failed to start within timeout.")
   }
 
   if (!nextServerReady || !nextWebReady) {
@@ -264,7 +353,7 @@ async function ensureDevelopmentServices() {
     )
   }
 
-  console.log("[desktop] All services ready.")
+  log.log("[desktop] All services ready.")
 }
 
 function serveProductionWeb(win: BrowserWindow) {
@@ -274,7 +363,7 @@ function serveProductionWeb(win: BrowserWindow) {
 
   const indexPath = path.resolve(webDistPath, "index.html")
 
-  console.log("[desktop] Serving web from:", webDistPath)
+  log.log("[desktop] Serving web from:", webDistPath)
 
   // Simple static file server
   httpServer = createHttpServer((req, res) => {
@@ -328,7 +417,7 @@ function serveProductionWeb(win: BrowserWindow) {
   })
 
   httpServer.listen(3000, "127.0.0.1", () => {
-    console.log("[desktop] Local web server running on http://127.0.0.1:3000")
+    log.log("[desktop] Local web server running on http://127.0.0.1:3000")
   })
 
   return waitForUrl("http://127.0.0.1:3000", 30)
@@ -339,7 +428,7 @@ async function startProductionServer() {
     ? path.resolve(repoRoot, "apps/server/dist/index.js")
     : path.resolve(__dirname, "../../server/dist/index.js")
 
-  console.log("[desktop] Starting server from:", serverDistPath)
+  log.log("[desktop] Starting server from:", serverDistPath)
 
   // Start the server process
   serverProcess = spawn(process.execPath, [serverDistPath], {
@@ -360,11 +449,11 @@ async function startProductionServer() {
   })
 
   serverProcess.on("error", (error) => {
-    console.error("[server] process error:", error.message)
+    log.error("[server] process error:", error.message)
   })
 
   serverProcess.on("exit", (code) => {
-    console.log("[server] exited with code", code)
+    log.log("[server] exited with code", code)
   })
 
   // Wait for server to be ready
@@ -373,7 +462,7 @@ async function startProductionServer() {
     throw new Error("Server failed to start")
   }
 
-  console.log("[desktop] Server ready")
+  log.log("[desktop] Server ready")
 }
 
 async function createWindow() {
@@ -517,6 +606,20 @@ app.whenReady().then(async () => {
     return await checkForUpdates()
   })
 
+  ipcMain.handle("download-update", async () => {
+    try {
+      await autoUpdater.downloadUpdate()
+      return { success: true }
+    } catch (error) {
+      log.error("[update] Failed to download update:", error)
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle("install-update", async () => {
+    autoUpdater.quitAndInstall()
+  })
+
   ipcMain.handle("get-app-version", () => {
     return CURRENT_VERSION
   })
@@ -525,10 +628,6 @@ app.whenReady().then(async () => {
     if (url.startsWith("http://") || url.startsWith("https://")) {
       await shell.openExternal(url)
     }
-  })
-
-  ipcMain.handle("install-update", async () => {
-    await shell.openExternal(`https://github.com/${UPDATE_REPO}/releases`)
   })
 
   // Create application menu
@@ -540,19 +639,30 @@ app.whenReady().then(async () => {
   // Check for updates on startup (production only, with delay)
   if (!isDevelopment) {
     setTimeout(async () => {
-      console.log("[desktop] Checking for updates...")
+      log.log("[desktop] Checking for updates...")
       const result = await checkForUpdates()
       if (result.hasUpdate && result.release) {
-        console.log("[desktop] Update available:", result.release.tag_name)
-        mainWindow?.webContents.send("update-available", result.release)
+        log.log("[desktop] Update available:", result.release.tag_name)
+        showUpdateDialog(result.release)
       }
     }, 5000)
+
+    // Check for updates daily
+    const CHECK_INTERVAL = 24 * 60 * 60 * 1000 // 24 hours
+    setInterval(async () => {
+      log.log("[desktop] Daily update check...")
+      const result = await checkForUpdates()
+      if (result.hasUpdate && result.release) {
+        log.log("[desktop] Update available:", result.release.tag_name)
+        showUpdateDialog(result.release)
+      }
+    }, CHECK_INTERVAL)
   }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow().catch((error) => {
-        console.error("[desktop] Failed to create window on activate:", error)
+        log.error("[desktop] Failed to create window on activate:", error)
       })
     }
   })
