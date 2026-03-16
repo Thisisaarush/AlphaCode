@@ -6,3 +6,4 @@ dist
 apps/web/.vite
 apps/server/.env
 apps/web/.env
+apps/desktop/release/
