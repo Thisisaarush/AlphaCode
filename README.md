@@ -1,6 +1,6 @@
 # Alpha Code
 
-An AI-powered code editor built with Electron, React, and Node.js.
+An AI-powered code editor.
 
 ## Features
 
@@ -14,8 +14,8 @@ An AI-powered code editor built with Electron, React, and Node.js.
 
 ### macOS
 
-1. Download the latest `.dmg` file from [Releases](https://github.com/Thisisaarush/AlphaCode/releases)
-2. Open the `.dmg` file
+1. Download the latest `.app` file from [Releases](https://github.com/Thisisaarush/AlphaCode/releases)
+2. Open the `.app` file
 3. Drag Alpha Code to Applications
 4. Open Alpha Code from Applications
 
@@ -57,7 +57,3 @@ pnpm dist:linux # Linux only
 - `Cmd/Ctrl + Shift + P` - Command palette
 - `Cmd/Ctrl + B` - Toggle sidebar
 - `Cmd/Ctrl + `` - Toggle terminal
-
-## License
-
-MIT
